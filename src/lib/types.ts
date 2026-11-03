@@ -78,3 +78,13 @@ export interface TableInfo {
   systemTable: boolean;
   comment: string | null;
 }
+
+/** One row of the details pane's views list. */
+export interface ViewInfo {
+  name: string;
+  oid: number;
+  owner: string;
+  /** Created by initdb (OID below 16384). */
+  systemView: boolean;
+  comment: string | null;
+}

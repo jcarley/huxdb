@@ -41,9 +41,9 @@ export function nodeKey(node: TreeNodeRef): string {
 /** A group or object node, i.e. one that lives under a schema's object group. */
 type GroupedRef = Extract<TreeNodeRef, { kind: "group" | "object" }>;
 
-/** Whether `node` is a schema's Tables group or a table under it; the details pane shows the tables list then. */
-export function isTablesSelection(node: TreeNodeRef | null): node is GroupedRef {
-  return (node?.kind === "group" || node?.kind === "object") && node.group === "tables";
+/** Whether `node` is a schema's `group` node or an object under it; the details pane shows that group's list then. */
+export function isGroupSelection(node: TreeNodeRef | null, group: ObjectGroup): node is GroupedRef {
+  return (node?.kind === "group" || node?.kind === "object") && node.group === group;
 }
 
 const isWithin = (key: string, ancestor: string) => key === ancestor || key.startsWith(ancestor + SEP);
@@ -78,8 +78,8 @@ interface ExplorerState {
   /** Re-runs a node's load; its descendants are collapsed and reloaded when reopened. */
   refresh: (node: TreeNodeRef) => void;
   select: (node: TreeNodeRef) => void;
-  /** Selects the Tables group of the selected node's schema (expanding the schema). No-op outside a schema. */
-  showTables: () => void;
+  /** Selects `group` in the selected node's schema (expanding the schema). No-op outside a schema. */
+  showGroup: (group: ObjectGroup) => void;
   /** Closes the connection's pools in the backend and forgets its tree state. */
   closeConnection: (connectionId: string) => Promise<void>;
   /** Drops all tree state for a connection (e.g. after it was edited or deleted). */
@@ -176,12 +176,12 @@ export const useExplorer = create<ExplorerState>((set, get) => {
       useConnections.getState().select(node.connectionId);
     },
 
-    showTables: () => {
+    showGroup: (group) => {
       const node = get().selected;
       if (!node || !("schema" in node)) return;
       const { connectionId, database, schema } = node;
       get().expand({ kind: "schema", connectionId, database, schema });
-      get().select({ kind: "group", connectionId, database, schema, group: "tables" });
+      get().select({ kind: "group", connectionId, database, schema, group });
     },
 
     closeConnection: async (connectionId) => {

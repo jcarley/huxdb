@@ -1,8 +1,8 @@
-import { Plug, SquarePen, Table } from "lucide-react";
+import { Eye, Plug, SquarePen, Table } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { newConnection } from "../lib/types";
 import { useConnections } from "../stores/connections";
-import { isTablesSelection, useExplorer } from "../stores/explorer";
+import { isGroupSelection, useExplorer } from "../stores/explorer";
 
 interface ToolbarButtonProps {
   icon: LucideIcon;
@@ -36,7 +36,8 @@ function Separator() {
 export function Toolbar() {
   const openEditor = useConnections((s) => s.openEditor);
   const selected = useExplorer((s) => s.selected);
-  const showTables = useExplorer((s) => s.showTables);
+  const showGroup = useExplorer((s) => s.showGroup);
+  const inSchema = !!selected && "schema" in selected;
 
   return (
     <header className="flex items-center gap-1 border-b border-base-300 bg-base-100 px-2 py-1">
@@ -47,9 +48,16 @@ export function Toolbar() {
       <ToolbarButton
         icon={Table}
         label="Tables"
-        disabled={!selected || !("schema" in selected)}
-        active={isTablesSelection(selected)}
-        onClick={showTables}
+        disabled={!inSchema}
+        active={isGroupSelection(selected, "tables")}
+        onClick={() => showGroup("tables")}
+      />
+      <ToolbarButton
+        icon={Eye}
+        label="Views"
+        disabled={!inSchema}
+        active={isGroupSelection(selected, "views")}
+        onClick={() => showGroup("views")}
       />
     </header>
   );

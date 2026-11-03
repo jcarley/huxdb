@@ -4,7 +4,7 @@
 mod postgres;
 pub mod sessions;
 
-use postgres::{SchemaObjects, TableInfo};
+use postgres::{SchemaObjects, TableInfo, ViewInfo};
 use sessions::SessionManager;
 use sqlx::PgPool;
 use tauri::State;
@@ -76,4 +76,17 @@ pub async fn list_tables(
 ) -> Result<Vec<TableInfo>, String> {
     let pool = pool_for(&store, &sessions, &connection_id, Some(&database))?;
     postgres::list_tables(&pool, &schema).await
+}
+
+/// Views in a schema with the details pane's columns.
+#[tauri::command]
+pub async fn list_views(
+    store: State<'_, ConnectionStore>,
+    sessions: State<'_, SessionManager>,
+    connection_id: String,
+    database: String,
+    schema: String,
+) -> Result<Vec<ViewInfo>, String> {
+    let pool = pool_for(&store, &sessions, &connection_id, Some(&database))?;
+    postgres::list_views(&pool, &schema).await
 }
