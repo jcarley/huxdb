@@ -19,3 +19,6 @@ stop: ## Stop running services without removing them
 
 dev: ## starts the development server
 	@npm run tauri dev
+
+build:
+	@npm run tauri build
