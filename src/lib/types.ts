@@ -88,3 +88,48 @@ export interface ViewInfo {
   systemView: boolean;
   comment: string | null;
 }
+
+// Mirrors src-tauri/src/designer/model.rs
+
+export type Identity = "always" | "by-default";
+
+export interface ColumnDesign {
+  /** Name when loaded; null for a field added in the designer. Diffing matches on it. */
+  originalName: string | null;
+  name: string;
+  /** Type without modifiers, e.g. `character varying`, `integer[]`. */
+  dataType: string;
+  length: number | null;
+  scale: number | null;
+  notNull: boolean;
+  /** Raw SQL expression; text defaults need their quotes. */
+  default: string | null;
+  identity: Identity | null;
+  /** Generated column expression; read-only for now. */
+  generated: string | null;
+  comment: string | null;
+  /** 1-based position in the primary key. */
+  keyOrder: number | null;
+}
+
+export interface TableDesign {
+  schema: string;
+  name: string;
+  comment: string | null;
+  primaryKeyName: string | null;
+  columns: ColumnDesign[];
+}
+
+export const newColumn = (): ColumnDesign => ({
+  originalName: null,
+  name: "",
+  dataType: "",
+  length: null,
+  scale: null,
+  notNull: false,
+  default: null,
+  identity: null,
+  generated: null,
+  comment: null,
+  keyOrder: null,
+});

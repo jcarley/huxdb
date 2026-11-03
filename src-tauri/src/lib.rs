@@ -1,4 +1,5 @@
 mod connections;
+mod designer;
 mod explorer;
 
 use connections::store::ConnectionStore;
@@ -26,6 +27,9 @@ pub fn run() {
             explorer::list_schema_objects,
             explorer::list_tables,
             explorer::list_views,
+            designer::load_table_design,
+            designer::preview_table_ddl,
+            designer::save_table_design,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

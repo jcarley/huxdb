@@ -5,6 +5,7 @@ import { create } from "zustand";
 import * as api from "../lib/api";
 import type { SchemaObjects } from "../lib/types";
 import { useConnections } from "./connections";
+import { useTabs } from "./tabs";
 
 export type ObjectGroup = "tables" | "views" | "materializedViews" | "functions";
 
@@ -77,6 +78,9 @@ interface ExplorerState {
   toggle: (node: TreeNodeRef) => void;
   /** Re-runs a node's load; its descendants are collapsed and reloaded when reopened. */
   refresh: (node: TreeNodeRef) => void;
+  /** Re-runs a node's load in place, keeping expansion and the selection (e.g. after a designer save). */
+  reload: (node: TreeNodeRef) => void;
+  /** Selects a node and shows it in the main pane's Objects tab. */
   select: (node: TreeNodeRef) => void;
   /** Selects `group` in the selected node's schema (expanding the schema). No-op outside a schema. */
   showGroup: (group: ObjectGroup) => void;
@@ -171,8 +175,13 @@ export const useExplorer = create<ExplorerState>((set, get) => {
       void load(node);
     },
 
+    reload: (node) => {
+      if (loadsData(node) && get().loads[nodeKey(node)]) void load(node);
+    },
+
     select: (node) => {
       set({ selectedKey: nodeKey(node), selected: node });
+      useTabs.getState().activate(null);
       useConnections.getState().select(node.connectionId);
     },
 

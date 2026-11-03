@@ -2,6 +2,7 @@ import { create } from "zustand";
 import * as api from "../lib/api";
 import type { ConnectionConfig } from "../lib/types";
 import { useExplorer } from "./explorer";
+import { useTabs } from "./tabs";
 
 interface ConnectionsState {
   connections: ConnectionConfig[];
@@ -48,6 +49,7 @@ export const useConnections = create<ConnectionsState>((set, get) => ({
     // The backend closed this connection's pools; drop its now-stale tree.
     const explorer = useExplorer.getState();
     explorer.forget(saved.id);
+    useTabs.getState().forgetConnection(saved.id);
     explorer.select({ kind: "connection", connectionId: saved.id });
     const { connections } = get();
     const exists = connections.some((c) => c.id === saved.id);
@@ -68,6 +70,7 @@ export const useConnections = create<ConnectionsState>((set, get) => ({
     if (!target) return;
     await api.deleteConnection(target.id);
     useExplorer.getState().forget(target.id);
+    useTabs.getState().forgetConnection(target.id);
     set((s) => ({
       connections: s.connections.filter((c) => c.id !== target.id),
       selectedId: s.selectedId === target.id ? null : s.selectedId,

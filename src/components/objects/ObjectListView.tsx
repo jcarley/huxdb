@@ -5,6 +5,7 @@ import type { LucideIcon } from "lucide-react";
 import * as api from "../../lib/api";
 import { useExplorer } from "../../stores/explorer";
 import type { ObjectGroup } from "../../stores/explorer";
+import { useSchemaVersion } from "../../stores/tabs";
 import { ObjectToolbar } from "./ObjectToolbar";
 import type { ObjectAction } from "./ObjectToolbar";
 
@@ -51,6 +52,8 @@ export function ObjectListView<T extends { name: string }>({
 }: ObjectListViewProps<T>) {
   const [list, setList] = useState<ListState<T>>({ status: "loading" });
   const [reloadToken, setReloadToken] = useState(0);
+  // Bumped when a designer saves into this schema.
+  const schemaVersion = useSchemaVersion({ connectionId, database, schema });
 
   useEffect(() => {
     let ignore = false;
@@ -62,7 +65,7 @@ export function ObjectListView<T extends { name: string }>({
     return () => {
       ignore = true;
     };
-  }, [load, connectionId, database, schema, reloadToken]);
+  }, [load, connectionId, database, schema, reloadToken, schemaVersion]);
 
   const reload = () => setReloadToken((t) => t + 1);
   // The tree selection is the single source of truth, so the list and tree never disagree.

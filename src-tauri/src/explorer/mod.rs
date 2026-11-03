@@ -13,7 +13,7 @@ use crate::connections::postgres::initial_database;
 use crate::connections::store::ConnectionStore;
 
 /// Pool for a saved connection; `database` defaults to the connection's initial database.
-fn pool_for(
+pub(crate) fn pool_for(
     store: &ConnectionStore,
     sessions: &SessionManager,
     connection_id: &str,
