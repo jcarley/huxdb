@@ -1,0 +1,21 @@
+@import "tailwindcss";
+@plugin "daisyui" {
+  themes: corporate --default;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  /* Desktop app: no rubber-band scrolling or accidental text selection in chrome. */
+  overflow: hidden;
+  user-select: none;
+}
+
+input,
+textarea {
+  user-select: text;
+}
