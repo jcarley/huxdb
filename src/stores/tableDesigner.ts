@@ -3,13 +3,14 @@
 
 import { create } from "zustand";
 import * as api from "../lib/api";
-import { newCheck, newColumn, newExclude, newForeignKey, newIndex, newOptions, newTrigger, newUnique } from "../lib/types";
+import { newCheck, newColumn, newExclude, newForeignKey, newIndex, newOptions, newRule, newTrigger, newUnique } from "../lib/types";
 import type {
   CheckDesign,
   ColumnDesign,
   ExcludeDesign,
   ForeignKeyDesign,
   IndexDesign,
+  RuleDesign,
   TableDesign,
   TableOptions,
   TriggerDesign,
@@ -21,11 +22,11 @@ import { useTabs } from "./tabs";
 import type { DesignerTab } from "./tabs";
 
 /** The designer tabs listing indexes and constraints, named after their `TableDesign` arrays. */
-export type ObjectKind = "indexes" | "foreignKeys" | "uniques" | "checks" | "excludes" | "triggers";
+export type ObjectKind = "indexes" | "foreignKeys" | "uniques" | "checks" | "excludes" | "triggers" | "rules";
 
-export const OBJECT_KINDS: ObjectKind[] = ["indexes", "foreignKeys", "uniques", "checks", "excludes", "triggers"];
+export const OBJECT_KINDS: ObjectKind[] = ["indexes", "foreignKeys", "uniques", "checks", "excludes", "triggers", "rules"];
 
-/** Kinds whose names share one namespace (constraints and indexes); triggers have their own. */
+/** Kinds whose names share one namespace (constraints and indexes); triggers and rules each have their own. */
 const CONSTRAINT_KINDS = ["indexes", "foreignKeys", "uniques", "checks", "excludes"] as const;
 
 export interface ObjectOf {
@@ -35,6 +36,7 @@ export interface ObjectOf {
   checks: CheckDesign;
   excludes: ExcludeDesign;
   triggers: TriggerDesign;
+  rules: RuleDesign;
 }
 
 export interface Designer {
@@ -100,6 +102,7 @@ const emptyDesign = (tab: DesignerTab): TableDesign => ({
   excludes: [],
   triggers: [],
   options: newOptions(),
+  rules: [],
 });
 
 const NO_SELECTION: Record<ObjectKind, number | null> = {
@@ -109,6 +112,7 @@ const NO_SELECTION: Record<ObjectKind, number | null> = {
   checks: null,
   excludes: null,
   triggers: null,
+  rules: null,
 };
 
 const newObject = (kind: ObjectKind, design: TableDesign): ObjectOf[ObjectKind] => {
@@ -125,6 +129,8 @@ const newObject = (kind: ObjectKind, design: TableDesign): ObjectOf[ObjectKind] 
       return newExclude();
     case "triggers":
       return newTrigger();
+    case "rules":
+      return newRule();
   }
 };
 
@@ -191,9 +197,12 @@ export function objectErrors(design: TableDesign, kind: ObjectKind, row: number)
   const x = design[kind][row] as ObjectOf[ObjectKind] | undefined;
   if (!x) return errors;
   const name = x.name.trim();
-  if (kind === "triggers") {
+  if (kind === "triggers" || kind === "rules") {
+    const noun = kind === "triggers" ? "trigger" : "rule";
+    const others = (design[kind] as { name: string }[]).filter((o) => o !== x);
     if (!name) errors.name = "Name is required.";
-    else if (design.triggers.some((o) => o !== x && o.name.trim() === name)) errors.name = "The name is used by another trigger.";
+    else if (kind === "rules" && name === "_RETURN") errors.name = "_RETURN is reserved for views.";
+    else if (others.some((o) => o.name.trim() === name)) errors.name = `The name is used by another ${noun}.`;
   } else if (!name && x.originalName) errors.name = "An existing object needs a name.";
   else if (!name && x.comment?.trim()) errors.name = "A name is required to add a comment.";
   else if (name) {
@@ -239,6 +248,13 @@ export function objectErrors(design: TableDesign, kind: ObjectKind, row: number)
       else if (t.onTruncate && t.forEachRow) errors.events = "TRUNCATE triggers must fire for each statement.";
       if (t.onUpdate && missing(t.updateColumns)) errors.updateColumns = `There is no field "${missing(t.updateColumns)}".`;
       if (!t.functionName) errors.function = "Choose the trigger function.";
+      break;
+    }
+    case "rules": {
+      const r = x as RuleDesign;
+      if (r.definition === null && !r.actions.trim().replace(/;$/, "").trim()) {
+        errors.actions = "The definition is required (use NOTHING to do nothing).";
+      }
       break;
     }
   }

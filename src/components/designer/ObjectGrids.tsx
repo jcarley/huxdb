@@ -4,7 +4,7 @@ import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-tab
 import { Ellipsis, Lock } from "lucide-react";
 import { useColumns, useSchemas, useTables, useTriggerFunctions } from "../../lib/catalog";
 import type { Lookup } from "../../lib/catalog";
-import { FOREIGN_KEY_ACTIONS, INDEX_METHODS, TRIGGER_ENABLED } from "../../lib/types";
+import { FOREIGN_KEY_ACTIONS, INDEX_METHODS, RULE_EVENTS, TRIGGER_ENABLED } from "../../lib/types";
 import type {
   CheckDesign,
   ExcludeDesign,
@@ -12,6 +12,8 @@ import type {
   ForeignKeyDesign,
   IndexColumn,
   IndexDesign,
+  RuleDesign,
+  RuleEvent,
   TriggerDesign,
   TriggerEnabled,
   TriggerTiming,
@@ -19,6 +21,8 @@ import type {
 } from "../../lib/types";
 import { objectErrors, useTableDesigner } from "../../stores/tableDesigner";
 import type { ObjectKind, ObjectOf } from "../../stores/tableDesigner";
+import { Modal } from "../Modal";
+import { SqlEditor } from "../SqlEditor";
 import { ColumnPickerDialog } from "./ColumnPickerDialog";
 import type { PickedKey } from "./ColumnPickerDialog";
 import { DesignerId } from "./context";
@@ -37,8 +41,8 @@ function useObject<K extends ObjectKind>(kind: K, row: number, field?: string) {
     return d?.showErrors && field ? objectErrors(d.edited, kind, row)[field] : undefined;
   });
   const update = (patch: Partial<ObjectOf[K]>) => useTableDesigner.getState().updateObject(id, kind, row, patch);
-  // Constraint triggers and triggers with transition tables can't be edited.
-  const readOnly = kind === "triggers" && (value as TriggerDesign | undefined)?.definition != null;
+  // Constraint triggers, triggers with transition tables and unparsed rules can't be edited.
+  const readOnly = (kind === "triggers" || kind === "rules") && (value as { definition?: string | null } | undefined)?.definition != null;
   return { id, value, error, update, readOnly };
 }
 
@@ -58,7 +62,7 @@ const cellSelect = "select select-xs w-full rounded-none border-transparent bg-t
 function NameCell({ kind, row }: { kind: ObjectKind; row: number }) {
   const { value, error, update, readOnly } = useObject(kind, row, "name");
   if (!value) return null;
-  const definition = readOnly ? (value as TriggerDesign).definition! : undefined;
+  const definition = readOnly ? (value as { definition: string }).definition : undefined;
   return (
     <div className="flex items-center">
       {readOnly && <Lock className="ml-1.5 size-3 shrink-0 text-base-content/50" aria-label="Read-only definition" />}
@@ -67,7 +71,7 @@ function NameCell({ kind, row }: { kind: ObjectKind; row: number }) {
       value={value.name}
       title={error ?? definition}
       // Constraints and indexes may be left for PostgreSQL to name; triggers can't.
-      placeholder={value.originalName || kind === "triggers" ? "" : "(automatic)"}
+      placeholder={value.originalName || kind === "triggers" || kind === "rules" ? "" : "(automatic)"}
       spellCheck={false}
       autoCapitalize="off"
       autoCorrect="off"
@@ -78,7 +82,7 @@ function NameCell({ kind, row }: { kind: ObjectKind; row: number }) {
 }
 
 /** Free text; for nullable fields, blank is stored as null. */
-function TextCell<K extends ObjectKind>({ kind, row, field, mono, placeholder }: { kind: K; row: number; field: "comment" | "predicate" | "expression" | "when" | "arguments"; mono?: boolean; placeholder?: string }) {
+function TextCell<K extends ObjectKind>({ kind, row, field, mono, placeholder }: { kind: K; row: number; field: "comment" | "predicate" | "expression" | "when" | "arguments" | "condition"; mono?: boolean; placeholder?: string }) {
   const { value, error, update, readOnly } = useObject(kind, row, field);
   if (!value) return null;
   const text = (value as unknown as Record<string, string | null>)[field] ?? "";
@@ -397,6 +401,66 @@ function EnabledCell({ row }: { row: number }) {
   );
 }
 
+function RuleEventCell({ row }: { row: number }) {
+  const { value, update, readOnly } = useObject("rules", row);
+  if (!value) return null;
+  return (
+    <select className={cellSelect} value={value.event} disabled={readOnly} onChange={(e) => update({ event: e.target.value as RuleEvent })}>
+      {RULE_EVENTS.map((ev) => (
+        <option key={ev} value={ev}>
+          {ev.toUpperCase()}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/** Edits SQL in a CodeMirror dialog; the value only changes on OK. */
+function SqlEditDialog({ title, value, onSave, onClose }: { title: string; value: string; onSave: (sql: string) => void; onClose: () => void }) {
+  const [sql, setSql] = useState(value);
+  return (
+    <Modal title={title} onClose={onClose} className="max-w-3xl">
+      <SqlEditor value={sql} onChange={setSql} className="h-64 rounded-box border border-base-300" />
+      <div className="modal-action">
+        <button type="button" className="btn" onClick={onClose}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary"
+          data-autofocus
+          onClick={() => {
+            onSave(sql);
+            onClose();
+          }}
+        >
+          OK
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/** A rule's commands: the first line in the grid, the full text in the SQL dialog. */
+function RuleActionsCell({ row }: { row: number }) {
+  const { value, error, update, readOnly } = useObject("rules", row, "actions");
+  const [open, setOpen] = useState(false);
+  if (!value) return null;
+  const text = readOnly ? (value.definition ?? "") : value.actions;
+  return (
+    <PickerCell text={text.split("\n")[0]} error={error} title="Edit the definition" disabled={readOnly} open={() => setOpen(true)}>
+      {open && (
+        <SqlEditDialog
+          title={`Rule Definition (${value.name || "new rule"})`}
+          value={value.actions}
+          onSave={(actions) => update({ actions })}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </PickerCell>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Grids
 // ---------------------------------------------------------------------------
@@ -493,6 +557,20 @@ const TRIGGER_COLUMNS = triggerHelper.columns([
   triggerHelper.display({ id: "comment", header: "Comment", cell: (c) => <TextCell kind="triggers" row={c.row.index} field="comment" /> }),
 ]);
 
+const ruleHelper = createColumnHelper<typeof features, RuleDesign>();
+const RULE_COLUMNS = ruleHelper.columns([
+  ruleHelper.display({ id: "name", header: "Name", cell: (c) => <NameCell kind="rules" row={c.row.index} /> }),
+  ruleHelper.display({ id: "event", header: "Event", cell: (c) => <RuleEventCell row={c.row.index} /> }),
+  ruleHelper.display({ id: "instead", header: "Do Instead", cell: (c) => <CheckboxCell kind="rules" row={c.row.index} field="instead" /> }),
+  ruleHelper.display({
+    id: "condition",
+    header: "Where",
+    cell: (c) => <TextCell kind="rules" row={c.row.index} field="condition" mono placeholder="e.g. old.locked" />,
+  }),
+  ruleHelper.display({ id: "actions", header: "Definition", cell: (c) => <RuleActionsCell row={c.row.index} /> }),
+  ruleHelper.display({ id: "comment", header: "Comment", cell: (c) => <TextCell kind="rules" row={c.row.index} field="comment" /> }),
+]);
+
 /** Column widths in px, by column id. */
 const WIDTHS: Record<string, number> = {
   name: 200,
@@ -520,9 +598,13 @@ const WIDTHS: Record<string, number> = {
   function: 200,
   arguments: 130,
   enabled: 100,
+  event: 100,
+  instead: 80,
+  condition: 220,
+  actions: 360,
 };
 
-const CENTERED = new Set(["unique", "noInherit", "forEachRow", "eventInsert", "eventUpdate", "eventDelete", "eventTruncate"]);
+const CENTERED = new Set(["unique", "noInherit", "instead", "forEachRow", "eventInsert", "eventUpdate", "eventDelete", "eventTruncate"]);
 
 interface ObjectGridProps<T> {
   id: string;
@@ -617,4 +699,8 @@ export function ExcludesGrid({ id }: { id: string }) {
 
 export function TriggersGrid({ id }: { id: string }) {
   return <ObjectGrid id={id} kind="triggers" rows={useRows(id, "triggers")} columns={asColumns(TRIGGER_COLUMNS)} emptyText="No triggers. Click Add Trigger to create one." />;
+}
+
+export function RulesGrid({ id }: { id: string }) {
+  return <ObjectGrid id={id} kind="rules" rows={useRows(id, "rules")} columns={asColumns(RULE_COLUMNS)} emptyText="No rules. Click Add Rule to create one." />;
 }

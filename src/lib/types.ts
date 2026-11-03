@@ -125,6 +125,26 @@ export interface TableDesign {
   excludes: ExcludeDesign[];
   triggers: TriggerDesign[];
   options: TableOptions;
+  rules: RuleDesign[];
+}
+
+/** ON SELECT rules would turn a table into a view, so they aren't offered. */
+export const RULE_EVENTS = ["insert", "update", "delete"] as const;
+export type RuleEvent = (typeof RULE_EVENTS)[number];
+
+export interface RuleDesign {
+  originalName: string | null;
+  name: string;
+  event: RuleEvent;
+  /** DO INSTEAD; otherwise DO ALSO. */
+  instead: boolean;
+  /** WHERE condition without its parentheses; may use only NEW and OLD. */
+  condition: string | null;
+  /** The commands: `NOTHING`, one command, or `(cmd1; cmd2)`. */
+  actions: string;
+  comment: string | null;
+  /** Set for a rule whose definition couldn't be parsed; it is read-only. */
+  definition: string | null;
 }
 
 /** An exclusion constraint element: a column (or expression) and its operator. */
@@ -301,6 +321,17 @@ export const newTrigger = (): TriggerDesign => ({
   functionName: "",
   arguments: "",
   enabled: "origin",
+  comment: null,
+  definition: null,
+});
+
+export const newRule = (): RuleDesign => ({
+  originalName: null,
+  name: "",
+  event: "insert",
+  instead: false,
+  condition: null,
+  actions: "",
   comment: null,
   definition: null,
 });

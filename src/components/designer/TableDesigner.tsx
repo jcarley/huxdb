@@ -8,7 +8,7 @@ import type { Designer, ObjectKind } from "../../stores/tableDesigner";
 import { Modal } from "../Modal";
 import { SqlEditor } from "../SqlEditor";
 import { FieldsGrid } from "./FieldsGrid";
-import { ChecksGrid, ExcludesGrid, ForeignKeysGrid, IndexesGrid, TriggersGrid, UniquesGrid } from "./ObjectGrids";
+import { ChecksGrid, ExcludesGrid, ForeignKeysGrid, IndexesGrid, RulesGrid, TriggersGrid, UniquesGrid } from "./ObjectGrids";
 import { OptionsForm } from "./OptionsForm";
 
 type DesignerTabName = "fields" | ObjectKind | "options" | "comment" | "sql";
@@ -21,6 +21,7 @@ const SUB_TABS: { tab: DesignerTabName; label: string }[] = [
   { tab: "checks", label: "Checks" },
   { tab: "excludes", label: "Excludes" },
   { tab: "triggers", label: "Triggers" },
+  { tab: "rules", label: "Rules" },
   { tab: "options", label: "Options" },
   { tab: "comment", label: "Comment" },
   { tab: "sql", label: "SQL Preview" },
@@ -34,6 +35,7 @@ const OBJECT_NOUNS: Record<ObjectKind, string> = {
   checks: "Check",
   excludes: "Exclude",
   triggers: "Trigger",
+  rules: "Rule",
 };
 
 const OBJECT_GRIDS: Record<ObjectKind, ComponentType<{ id: string }>> = {
@@ -43,6 +45,7 @@ const OBJECT_GRIDS: Record<ObjectKind, ComponentType<{ id: string }>> = {
   checks: ChecksGrid,
   excludes: ExcludesGrid,
   triggers: TriggersGrid,
+  rules: RulesGrid,
 };
 
 const isObjectTab = (tab: DesignerTabName): tab is ObjectKind => tab in OBJECT_NOUNS;

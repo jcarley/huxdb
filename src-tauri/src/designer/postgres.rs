@@ -6,7 +6,7 @@ use sqlx::PgPool;
 use super::model::{
     CheckDesign, ColumnDesign, ExcludeDesign, ExcludeElement, ForeignKeyAction, ForeignKeyDesign, Identity,
     IndexColumn, IndexDesign, PartitionStrategy, QualifiedName, TableDesign, TableOptions, TriggerDesign,
-    TriggerEnabled, TriggerTiming, UniqueDesign,
+    RuleDesign, RuleEvent, TriggerEnabled, TriggerTiming, UniqueDesign,
 };
 
 fn err(e: sqlx::Error) -> String {
@@ -115,7 +115,112 @@ pub async fn load_table_design(pool: &PgPool, schema: &str, table: &str) -> Resu
         excludes: load_excludes(pool, schema, table).await?,
         triggers: load_triggers(pool, schema, table).await?,
         options: load_options(pool, schema, table).await?,
+        rules: load_rules(pool, schema, table).await?,
     })
+}
+
+/// Skips one possibly schema-qualified identifier at the start of `text`,
+/// stepping over quoted parts (where `""` is a quote), and returns the rest.
+fn skip_identifier(text: &str) -> &str {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    loop {
+        if bytes.get(i) == Some(&b'"') {
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'"' {
+                    if bytes.get(i + 1) == Some(&b'"') {
+                        i += 2;
+                        continue;
+                    }
+                    break;
+                }
+                i += 1;
+            }
+            i += 1; // closing quote
+        } else {
+            while i < bytes.len() && !matches!(bytes[i], b'.' | b' ' | b'\n') {
+                i += 1;
+            }
+        }
+        if bytes.get(i) == Some(&b'.') {
+            i += 1;
+        } else {
+            return &text[i.min(text.len())..];
+        }
+    }
+}
+
+/// Splits a (non-pretty) `pg_get_ruledef` result into (condition, actions),
+/// e.g. `CREATE RULE r AS ON DELETE TO t WHERE (old.locked) DO INSTEAD NOTHING;`
+/// gives `(Some("old.locked"), "NOTHING")`. The text is used as is, so string
+/// literals in the actions keep their spacing. `None` if it isn't understood.
+fn parse_rule(definition: &str) -> Option<(Option<String>, String)> {
+    let rest = skip_identifier(definition.strip_prefix("CREATE RULE ")?);
+    let rest = rest.strip_prefix(" AS")?.trim_start().strip_prefix("ON ")?;
+    let rest = &rest[rest.find(" TO ")? + " TO ".len()..];
+    let rest = skip_identifier(rest).trim_start();
+    let (condition, rest) = match rest.strip_prefix("WHERE ") {
+        Some(after) => {
+            let end = after.find(" DO ")?;
+            let condition = after[..end].trim();
+            let inner = condition.strip_prefix('(').and_then(|c| c.strip_suffix(')')).unwrap_or(condition);
+            (Some(inner.to_string()), after[end..].trim_start())
+        }
+        None => (None, rest),
+    };
+    let actions = rest.strip_prefix("DO")?.trim_start();
+    let actions = actions.strip_prefix("INSTEAD").map(str::trim_start).unwrap_or(actions);
+    let actions = actions.trim_end().trim_end_matches(';').trim_end();
+    (!actions.is_empty()).then(|| (condition, actions.to_string()))
+}
+
+/// Columns of the rules query: name, event code, instead, definition, comment.
+type RuleRow = (String, String, bool, String, Option<String>);
+
+/// Table rules (a view's `_RETURN` rule doesn't apply to tables).
+async fn load_rules(pool: &PgPool, schema: &str, table: &str) -> Result<Vec<RuleDesign>, String> {
+    let rows: Vec<RuleRow> = sqlx::query_as(
+        "SELECT r.rulename::text, r.ev_type::text, r.is_instead, pg_get_ruledef(r.oid),
+                obj_description(r.oid, 'pg_rewrite')
+         FROM pg_rewrite r
+         JOIN pg_class c ON c.oid = r.ev_class
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = $1 AND c.relname = $2 AND r.rulename <> '_RETURN'
+         ORDER BY r.rulename",
+    )
+    .bind(schema)
+    .bind(table)
+    .fetch_all(pool)
+    .await
+    .map_err(err)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(name, event, instead, definition, comment)| {
+            let event = match event.as_str() {
+                "2" => Some(RuleEvent::Update),
+                "3" => Some(RuleEvent::Insert),
+                "4" => Some(RuleEvent::Delete),
+                _ => None, // ON SELECT
+            };
+            // Anything unexpected stays read-only rather than being rebuilt wrongly.
+            let (condition, actions, definition) = match (event, parse_rule(&definition)) {
+                (Some(_), Some((condition, actions))) => (condition, actions, None),
+                _ => (None, String::new(), Some(definition.trim_end_matches(';').to_string())),
+            };
+            RuleDesign {
+                original_name: Some(name.clone()),
+                name,
+                event: event.unwrap_or_default(),
+                instead,
+                condition,
+                actions,
+                comment,
+                definition,
+            }
+        })
+        .collect())
 }
 
 /// Columns of the excludes query: name, method, keys, operators, predicate, comment.
@@ -885,6 +990,36 @@ fn create_trigger(t: &TriggerDesign, body: &str, table: &str) -> Vec<String> {
     statements
 }
 
+// Rules -----------------------------------------------------------------------
+
+/// Everything after `CREATE RULE "name"`. An unparsed rule's definition stands for itself.
+fn rule_body(r: &RuleDesign, table: &str) -> String {
+    if let Some(definition) = &r.definition {
+        return definition.clone();
+    }
+    let event = match r.event {
+        RuleEvent::Insert => "INSERT",
+        RuleEvent::Update => "UPDATE",
+        RuleEvent::Delete => "DELETE",
+    };
+    let condition = r.condition.as_ref().map(|c| format!(" WHERE ({c})")).unwrap_or_default();
+    let mode = if r.instead { "INSTEAD" } else { "ALSO" };
+    format!("AS ON {event} TO {table}{condition} DO {mode} {}", r.actions)
+}
+
+fn rule_comment(table: &str, r: &RuleDesign) -> String {
+    comment_sql(&format!("RULE {} ON {table}", quote_ident(&r.name)), &r.comment)
+}
+
+/// CREATE RULE plus the comment a fresh rule lacks.
+fn create_rule(r: &RuleDesign, table: &str) -> Vec<String> {
+    let mut statements = vec![format!("CREATE RULE {} {}", quote_ident(&r.name), rule_body(r, table))];
+    if r.comment.is_some() {
+        statements.push(rule_comment(table, r));
+    }
+    statements
+}
+
 // Table options ---------------------------------------------------------------
 
 /// Put before statements that rewrite the table, so SQL Preview warns about them.
@@ -984,6 +1119,9 @@ fn create_table(design: &TableDesign) -> Vec<String> {
             statements.extend(create_trigger(t, &body, &table));
         }
     }
+    for r in &design.rules {
+        statements.extend(create_rule(r, &table));
+    }
 
     if design.comment.is_some() {
         statements.push(comment_sql(&format!("TABLE {table}"), &design.comment));
@@ -1042,9 +1180,22 @@ fn alter_table(original: &TableDesign, edited: &TableDesign) -> Vec<String> {
     };
     let kept_trigger = |o: &TriggerDesign| edited.triggers.iter().any(|t| trigger_predecessor(t).is_some_and(|p| p.name == o.name));
 
-    // 0. Drop triggers, indexes and constraints that were removed or changed,
-    //    before the columns they use change, and detach removed parents so
-    //    their inherited columns can be dropped.
+    // Rules likewise. Column renames don't change a loaded rule's text (the
+    // server rewrites the stored rule), so an untouched rule is kept.
+    let rule_predecessor = |r: &RuleDesign| {
+        original
+            .rules
+            .iter()
+            .find(|o| r.original_name.as_deref() == Some(o.name.as_str()) && rule_body(o, &table) == rule_body(r, &table))
+    };
+    let kept_rule = |o: &RuleDesign| edited.rules.iter().any(|r| rule_predecessor(r).is_some_and(|p| p.name == o.name));
+
+    // 0. Drop rules, triggers, indexes and constraints that were removed or
+    //    changed, before the columns they use change, and detach removed
+    //    parents so their inherited columns can be dropped.
+    for o in original.rules.iter().filter(|o| !kept_rule(o)) {
+        statements.push(format!("DROP RULE {} ON {table}", quote_ident(&o.name)));
+    }
     for (o, _) in &old_triggers {
         if !kept_trigger(o) {
             statements.push(format!("DROP TRIGGER {} ON {table}", quote_ident(&o.name)));
@@ -1173,7 +1324,26 @@ fn alter_table(original: &TableDesign, edited: &TableDesign) -> Vec<String> {
         }
     }
 
-    // 6d. Storage and ownership options.
+    // 6d. Rules after everything they could refer to.
+    for r in &edited.rules {
+        match rule_predecessor(r) {
+            Some(o) => {
+                if o.name != r.name {
+                    statements.push(format!(
+                        "ALTER RULE {} ON {table} RENAME TO {}",
+                        quote_ident(&o.name),
+                        quote_ident(&r.name)
+                    ));
+                }
+                if o.comment != r.comment {
+                    statements.push(rule_comment(&table, r));
+                }
+            }
+            None => statements.extend(create_rule(r, &table)),
+        }
+    }
+
+    // 6e. Storage and ownership options.
     statements.extend(alter_options(&table, &original.options, &edited.options));
 
     // 7. Comments.
@@ -2200,6 +2370,228 @@ mod tests {
         let of = partition.options.partition_of.unwrap();
         assert!(of.starts_with("huxdb_triggers_test.events FOR VALUES FROM"), "{of}");
         assert!(partition.options.inherits.is_empty());
+    }
+
+    fn rule(name: &str, event: RuleEvent, instead: bool, condition: Option<&str>, actions: &str) -> RuleDesign {
+        RuleDesign {
+            original_name: Some(name.into()),
+            name: name.into(),
+            event,
+            instead,
+            condition: condition.map(str::to_string),
+            actions: actions.into(),
+            ..Default::default()
+        }
+    }
+
+    /// `existing()` with an INSERT log rule and a DELETE guard rule.
+    fn with_rules() -> TableDesign {
+        let mut t = existing();
+        t.rules = vec![
+            RuleDesign {
+                comment: Some("keep a log".into()),
+                ..rule("items_log", RuleEvent::Insert, false, None, "INSERT INTO log (id) VALUES (new.id)")
+            },
+            rule("items_guard", RuleEvent::Delete, true, Some("old.price > 0"), "NOTHING"),
+        ];
+        t
+    }
+
+    fn diff_rules(edit: impl FnOnce(&mut TableDesign)) -> Vec<String> {
+        let original = with_rules();
+        let mut edited = original.clone();
+        edit(&mut edited);
+        generate_table_ddl(Some(&original), &edited.normalized())
+    }
+
+    const ITEMS: &str = "\"public\".\"items\"";
+
+    #[test]
+    fn parses_rule_definitions() {
+        let parse = |d: &str| parse_rule(d);
+        assert_eq!(
+            parse("CREATE RULE r AS ON DELETE TO public.t WHERE (old.locked) DO INSTEAD NOTHING;"),
+            Some((Some("old.locked".into()), "NOTHING".into()))
+        );
+        assert_eq!(
+            parse("CREATE RULE r AS ON INSERT TO t DO  INSERT INTO log (id, note) VALUES (new.id, 'two  spaces');"),
+            Some((None, "INSERT INTO log (id, note) VALUES (new.id, 'two  spaces')".into()))
+        );
+        assert_eq!(
+            parse("CREATE RULE \"a TO b\" AS ON UPDATE TO \"my schema\".\"x DO y\" DO INSTEAD ( UPDATE a SET n = 1; NOTIFY t; );"),
+            Some((None, "( UPDATE a SET n = 1; NOTIFY t; )".into()))
+        );
+        assert_eq!(
+            parse("CREATE RULE r AS ON INSERT TO t WHERE (new.id > 0) DO INSERT INTO log VALUES (new.id) ON CONFLICT DO NOTHING;"),
+            Some((Some("new.id > 0".into()), "INSERT INTO log VALUES (new.id) ON CONFLICT DO NOTHING".into()))
+        );
+        assert_eq!(parse("something else"), None);
+    }
+
+    #[test]
+    fn creates_rules_after_triggers() {
+        let mut design = with_rules();
+        design.primary_key_name = None;
+        for c in &mut design.columns {
+            c.original_name = None;
+        }
+        design.triggers = vec![TriggerDesign { on_insert: true, ..trigger("items_audit") }];
+        design.triggers[0].update_columns.clear();
+        design.triggers[0].on_update = false;
+        design.triggers[0].when = None;
+        let statements = generate_table_ddl(None, &design.normalized());
+        let tail: Vec<_> = statements[1..].iter().map(|s| s.split(' ').take(2).collect::<Vec<_>>().join(" ")).collect();
+        assert_eq!(tail, ["CREATE TRIGGER", "CREATE RULE", "COMMENT ON", "CREATE RULE"]);
+        assert_eq!(
+            statements[2],
+            format!("CREATE RULE \"items_log\" AS ON INSERT TO {ITEMS} DO ALSO INSERT INTO log (id) VALUES (new.id)")
+        );
+        assert_eq!(statements[3], format!("COMMENT ON RULE \"items_log\" ON {ITEMS} IS 'keep a log'"));
+        assert_eq!(statements[4], format!("CREATE RULE \"items_guard\" AS ON DELETE TO {ITEMS} WHERE (old.price > 0) DO INSTEAD NOTHING"));
+    }
+
+    #[test]
+    fn unchanged_rules_survive_column_renames() {
+        assert!(diff_rules(|_| {}).is_empty());
+        assert_eq!(diff_rules(|t| t.columns[2].name = "cost".into()), [format!("{T} RENAME COLUMN \"price\" TO \"cost\"")]);
+    }
+
+    #[test]
+    fn changed_rules_are_dropped_first_and_recreated_last() {
+        let statements = diff_rules(|t| {
+            t.rules[0].actions = "NOTHING;".into();
+            t.columns.remove(1);
+        });
+        assert_eq!(
+            statements,
+            [
+                format!("DROP RULE \"items_log\" ON {ITEMS}"),
+                format!("{T} DROP COLUMN \"name\""),
+                format!("CREATE RULE \"items_log\" AS ON INSERT TO {ITEMS} DO ALSO NOTHING"),
+                format!("COMMENT ON RULE \"items_log\" ON {ITEMS} IS 'keep a log'"),
+            ]
+        );
+    }
+
+    #[test]
+    fn renames_and_removes_rules() {
+        assert_eq!(
+            diff_rules(|t| {
+                t.rules[1].name = "items_no_delete".into();
+                t.rules[0].comment = None;
+            }),
+            [
+                format!("COMMENT ON RULE \"items_log\" ON {ITEMS} IS NULL"),
+                format!("ALTER RULE \"items_guard\" ON {ITEMS} RENAME TO \"items_no_delete\""),
+            ]
+        );
+        assert_eq!(diff_rules(|t| { t.rules.remove(1); }), [format!("DROP RULE \"items_guard\" ON {ITEMS}")]);
+    }
+
+    #[test]
+    fn unparsed_rules_are_kept_or_dropped_only() {
+        let mut original = with_rules();
+        original.rules[1] = RuleDesign { definition: Some("CREATE RULE items_guard AS …".into()), ..original.rules[1].clone() };
+        let mut edited = original.clone();
+        edited.rules[1].actions = "ignored".into();
+        assert!(generate_table_ddl(Some(&original), &edited.normalized()).is_empty());
+    }
+
+    #[test]
+    fn validation_checks_rules() {
+        let ok = with_rules().normalized();
+        assert_eq!(ok.validate(), Ok(()));
+        type Edit = Box<dyn Fn(&mut TableDesign)>;
+        let cases: Vec<Edit> = vec![
+            Box::new(|t| t.rules[0].name = "".into()),
+            Box::new(|t| t.rules[0].name = "_RETURN".into()),
+            Box::new(|t| t.rules[1].name = "items_log".into()),
+            Box::new(|t| t.rules[0].actions = " ; ".into()),
+        ];
+        for (i, edit) in cases.iter().enumerate() {
+            let mut t = ok.clone();
+            edit(&mut t);
+            assert!(t.normalized().validate().is_err(), "case {i}");
+        }
+    }
+
+    /// Needs a live server; see `connections::postgres::tests::connects_to_live_server`.
+    #[tokio::test]
+    #[ignore]
+    async fn round_trips_rules_on_live_server() {
+        let port: u16 = std::env::var("HUXDB_TEST_PG_PORT").unwrap().parse().unwrap();
+        let config = crate::connections::model::ConnectionConfig {
+            id: "live".into(),
+            port,
+            ..crate::connections::model::sample("live")
+        };
+        let sessions = crate::explorer::sessions::SessionManager::default();
+        let pool = sessions.pool(&config, "postgres");
+        let schema = "huxdb_rules_test";
+        sqlx::raw_sql(
+            "DROP SCHEMA IF EXISTS huxdb_rules_test CASCADE;
+             CREATE SCHEMA huxdb_rules_test;
+             CREATE TABLE huxdb_rules_test.log (id int, note text);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let created = TableDesign {
+            schema: schema.into(),
+            name: "docs".into(),
+            columns: vec![ColumnDesign { key_order: Some(1), ..new_col("id", "integer") }, new_col("locked", "boolean")],
+            rules: vec![
+                RuleDesign {
+                    name: "docs_log".into(),
+                    actions: "INSERT INTO huxdb_rules_test.log (id, note) VALUES (new.id, 'two  spaces')".into(),
+                    ..Default::default()
+                },
+                RuleDesign {
+                    name: "docs_guard".into(),
+                    event: RuleEvent::Delete,
+                    instead: true,
+                    condition: Some("old.locked".into()),
+                    actions: "NOTHING".into(),
+                    comment: Some("locked docs stay".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+        .normalized();
+        let loaded = save_table_design(&pool, None, &created).await.unwrap();
+
+        let names: Vec<_> = loaded.rules.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["docs_guard", "docs_log"]);
+        let guard = &loaded.rules[0];
+        assert_eq!((guard.event, guard.instead, guard.definition.as_deref()), (RuleEvent::Delete, true, None));
+        assert_eq!(guard.condition.as_deref(), Some("old.locked"));
+        assert_eq!(guard.actions, "NOTHING");
+        assert_eq!(guard.comment.as_deref(), Some("locked docs stay"));
+        let log = &loaded.rules[1];
+        assert_eq!((log.event, log.instead, log.condition.as_deref()), (RuleEvent::Insert, false, None));
+        assert!(log.actions.contains("'two  spaces'"), "{}", log.actions);
+        assert!(generate_table_ddl(Some(&loaded), &loaded.normalized()).is_empty(), "a loaded design round-trips");
+
+        // Renaming a field the guard's condition uses keeps the rule.
+        let mut renamed = loaded.clone();
+        renamed.columns[1].name = "frozen".into();
+        assert_eq!(generate_table_ddl(Some(&loaded), &renamed.normalized()).len(), 1);
+        let after_rename = save_table_design(&pool, Some(&loaded), &renamed.normalized()).await.unwrap();
+        assert_eq!(after_rename.rules[0].condition.as_deref(), Some("old.frozen"));
+
+        // Changing a rule re-creates it with its comment; deleting one drops it.
+        let mut changed = after_rename.clone();
+        changed.rules[0].condition = Some("old.frozen AND old.id > 0".into());
+        changed.rules.remove(1);
+        let after_change = save_table_design(&pool, Some(&after_rename), &changed.normalized()).await.unwrap();
+        sqlx::raw_sql("DROP SCHEMA huxdb_rules_test CASCADE").execute(&pool).await.unwrap();
+
+        assert_eq!(after_change.rules.len(), 1);
+        assert_eq!(after_change.rules[0].condition.as_deref(), Some("old.frozen AND (old.id > 0)"));
+        assert_eq!(after_change.rules[0].comment.as_deref(), Some("locked docs stay"));
+        assert!(generate_table_ddl(Some(&after_change), &after_change.normalized()).is_empty());
     }
 
     #[test]

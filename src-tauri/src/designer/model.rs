@@ -60,6 +60,37 @@ pub struct TableDesign {
     pub triggers: Vec<TriggerDesign>,
     #[serde(default)]
     pub options: TableOptions,
+    #[serde(default)]
+    pub rules: Vec<RuleDesign>,
+}
+
+/// The event a rule rewrites. ON SELECT rules would turn a table into a view
+/// (no longer allowed since PostgreSQL 16), so they aren't offered.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuleEvent {
+    #[default]
+    Insert,
+    Update,
+    Delete,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleDesign {
+    pub original_name: Option<String>,
+    pub name: String,
+    pub event: RuleEvent,
+    /// DO INSTEAD; otherwise DO ALSO.
+    pub instead: bool,
+    /// WHERE condition without its parentheses; may use only NEW and OLD.
+    pub condition: Option<String>,
+    /// The commands: `NOTHING`, one command, or `(cmd1; cmd2)`.
+    pub actions: String,
+    pub comment: Option<String>,
+    /// Full definition of a rule whose text couldn't be parsed. Such a rule
+    /// is only kept, renamed, commented or dropped.
+    pub definition: Option<String>,
 }
 
 /// One element of an exclusion constraint: a column (or an expression when it
@@ -356,6 +387,19 @@ impl TriggerDesign {
     }
 }
 
+impl RuleDesign {
+    fn normalized(&self) -> Self {
+        let actions = self.actions.trim();
+        Self {
+            name: self.name.trim().to_string(),
+            condition: clean(&self.condition),
+            actions: actions.strip_suffix(';').unwrap_or(actions).trim_end().to_string(),
+            comment: clean(&self.comment),
+            ..self.clone()
+        }
+    }
+}
+
 impl TableOptions {
     fn normalized(&self) -> Self {
         Self {
@@ -416,6 +460,7 @@ impl TableDesign {
             checks: self.checks.iter().map(CheckDesign::normalized).collect(),
             excludes: self.excludes.iter().map(ExcludeDesign::normalized).collect(),
             triggers: self.triggers.iter().map(TriggerDesign::normalized).collect(),
+            rules: self.rules.iter().map(RuleDesign::normalized).collect(),
             options: self.options.normalized(),
         }
     }
@@ -513,6 +558,7 @@ impl TableDesign {
             }
         }
         self.validate_triggers(columns)?;
+        self.validate_rules()?;
         self.validate_options()?;
 
         let named = self
@@ -558,6 +604,26 @@ impl TableDesign {
             }
             if t.function_schema.is_empty() || t.function_name.is_empty() {
                 return Err(format!("{label}: choose the trigger function."));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_rules(&self) -> Result<(), String> {
+        let mut names = HashSet::new();
+        for (i, r) in self.rules.iter().enumerate() {
+            let label = label("Rule", i, &r.name);
+            if r.name.is_empty() {
+                return Err(format!("{label}: name is required."));
+            }
+            if r.name == "_RETURN" {
+                return Err(format!("{label}: _RETURN is reserved for views."));
+            }
+            if !names.insert(r.name.as_str()) {
+                return Err(format!("{label}: the name is used by another rule."));
+            }
+            if r.definition.is_none() && r.actions.is_empty() {
+                return Err(format!("{label}: the definition is required (use NOTHING to do nothing)."));
             }
         }
         Ok(())
