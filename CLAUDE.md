@@ -14,7 +14,12 @@ huxdb is a desktop database management tool modeled on Navicat (reference for fe
 
 Built so far: saved PostgreSQL connection profiles (create / edit / delete / test), the main window shell (toolbar, sidebar, details pane), and a lazily loaded object tree in the sidebar (Connection → Databases → Schemas → Tables / Views / Materialized Views / Functions). Selecting a tree object shows no detail view yet, and nothing runs queries.
 
-Workflow: each iteration is developed on a `feature/<name>` branch. The user reviews and commits the changes; don't commit. Rust has unit tests; the frontend has no test framework, so `npm run build` (tsc strict) is its only check. No linter or formatter config beyond defaults.
+Rust has unit tests; the frontend has no test framework, so `npm run build` (tsc strict) is its only check. No linter or formatter config beyond defaults.
+
+## Workflow
+
+- **Start each new feature on its own branch** named `feature/<name>` (e.g. `feature/query-editor`), created from `main` before any changes are made.
+- **Don't commit.** The developer makes all commits so that every change is reviewed by a human. Leave the finished work uncommitted on the feature branch.
 
 ## Commands
 
