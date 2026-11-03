@@ -12,7 +12,9 @@ huxdb is a desktop database management tool modeled on Navicat (reference for fe
 
 ## Project state
 
-Built so far: saved PostgreSQL connection profiles (create / edit / delete / test) and the main window shell (toolbar, connection sidebar, details pane). Nothing yet browses schemas or runs queries. Rust has unit tests; the frontend has no test framework, so `npm run build` (tsc strict) is its only check. No linter or formatter config beyond defaults.
+Built so far: saved PostgreSQL connection profiles (create / edit / delete / test), the main window shell (toolbar, sidebar, details pane), and a lazily loaded object tree in the sidebar (Connection → Databases → Schemas → Tables / Views / Materialized Views / Functions). Selecting a tree object shows no detail view yet, and nothing runs queries.
+
+Workflow: each iteration is developed on a `feature/<name>` branch. The user reviews and commits the changes; don't commit. Rust has unit tests; the frontend has no test framework, so `npm run build` (tsc strict) is its only check. No linter or formatter config beyond defaults.
 
 ## Commands
 
@@ -36,14 +38,25 @@ Vite uses a fixed port (1420, `strictPort`); if it is taken, `tauri dev` fails r
 
 ## Architecture
 
-- **Frontend (`src/`)**: `App.tsx` lays out the Navicat-style shell: `Toolbar` (one big icon button per module; add buttons there as modules are built), `Sidebar` (connection list with right-click menu), and the main pane. Dialogs (`ConnectionDialog`, `ConfirmDeleteDialog`) are always mounted and render only when the store says so; each keys its inner form by connection id so its local state resets. `components/Modal.tsx` wraps a native `<dialog>` with daisyUI classes.
-- **State**: Zustand stores in `src/stores/`. `stores/connections.ts` owns the connection list, the selection, and which dialog is open, so any component can open the editor or the delete prompt without passing props down.
+- **Frontend (`src/`)**: `App.tsx` lays out the Navicat-style shell: `Toolbar` (one big icon button per module; add buttons there as modules are built), `Sidebar` (the object tree), and the main pane. Dialogs (`ConnectionDialog`, `ConfirmDeleteDialog`) are always mounted and render only when the store says so; each keys its inner form by connection id so its local state resets. `components/Modal.tsx` wraps a native `<dialog>` with daisyUI classes.
+- **State**: Zustand stores in `src/stores/`. `stores/connections.ts` owns the connection list, the selected connection, and which dialog is open, so any component can open the editor or the delete prompt without passing props down.
+- **Object tree**: `stores/explorer.ts` plus `components/tree/`.
+  - Every node is identified by a `TreeNodeRef`. `nodeKey()` turns it into a string key that is a prefix of all its descendants' keys; parts are joined with `\u001f`. Prefix matching on these keys is how a refresh or a closed connection drops a whole subtree.
+  - Connection, database and schema nodes load their children from the backend on first expand. Group and object nodes are just views of the schema's data.
+  - A per-key request counter discards responses that arrive after the node was refreshed or closed.
+  - Selecting a tree node also sets the connections store's selected connection, which drives the details pane.
+  - Saving or deleting a connection calls `forget(id)` to drop its tree.
+  - `TreeNode.tsx` is the generic row. `ContextMenu.tsx` is the one app-wide right-click menu (`useContextMenu().open(e, items)`).
 - **IPC contract**: `src/lib/api.ts` holds typed `invoke` wrappers, and `src/lib/types.ts` mirrors the Rust structs. Rust serializes with `#[serde(rename_all = "camelCase")]` (enums use kebab-case), so TS types match Rust field names converted to camelCase. When you change a Rust model, update `types.ts` too. Commands return `Result<T, String>`, so a rejected promise carries a plain string.
 - **Styling**: Tailwind CSS v4 + daisyUI v5 with the `corporate` theme, configured CSS-first in `src/App.css` (there's no `tailwind.config.js`). Icons come from `lucide-react`.
 - **Backend (`src-tauri/`)**: Logic lives in the library crate `huxdb_lib` (`src/lib.rs`); `main.rs` only calls `huxdb_lib::run()`. Edition 2024.
   - `connections/model.rs`: `ConnectionConfig` with `normalized()` and `validate()`. The UI repeats these checks in `ConnectionDialog.tsx` so it can show errors per field, but Rust has the final say.
   - `connections/store.rs`: `ConnectionStore` (Tauri managed state) keeps the list behind a `Mutex` and writes `connections.json` in the app config dir (macOS: `~/Library/Application Support/com.bluetarpsoftware.huxdb/`). Each save writes a temp file and renames it into place, with `0600` permissions on Unix. Passwords are stored in plain text there by deliberate decision. A file that can't be parsed is renamed to `connections.json.corrupt`, never overwritten.
-  - `connections/postgres.rs`: the only PostgreSQL-specific code (sqlx 0.9 with tokio runtime and native-tls). Future database engines get sibling modules.
+  - `connections/postgres.rs`: PostgreSQL connect options (sqlx 0.9 with tokio runtime and native-tls) and Test Connection. With no Initial Database set, huxdb connects to `postgres`, as Navicat does.
+  - `explorer/`: the tree's commands (`open_connection`, `close_connection`, `list_schemas`, `list_schema_objects`).
+    - `sessions.rs` (`SessionManager`, managed state) keeps one lazy `PgPool` per (connection id, database), because a PostgreSQL connection can't switch databases. Saving or deleting a connection closes its pools.
+    - `postgres.rs` holds the catalog queries. Names are always passed as bind parameters.
+  - PostgreSQL-specific code lives only in the `postgres.rs` files; future database engines get sibling modules.
 - **Adding a backend command** requires touching both sides: define a `#[tauri::command]` fn in Rust, register it in `tauri::generate_handler![...]` in `lib.rs`, then `invoke` it by name from TypeScript. Arguments are passed as a camelCase JSON object and deserialized via serde.
 - **Permissions**: Tauri 2 capabilities in `src-tauri/capabilities/default.json` gate plugin/API access for the `main` window. Adding a Tauri plugin means adding the crate, `.plugin(...)` in `lib.rs`, the npm package, and its permission here.
 - App identifier: `com.bluetarpsoftware.huxdb`. CSP is currently disabled (`"csp": null` in `tauri.conf.json`).

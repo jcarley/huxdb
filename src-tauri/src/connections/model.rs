@@ -29,7 +29,7 @@ pub struct ConnectionConfig {
     /// Stored in plaintext in the connections file (user decision for v1).
     #[serde(default)]
     pub password: String,
-    /// Initial database; when absent PostgreSQL defaults to the username.
+    /// Initial database; when absent huxdb connects to `postgres`.
     #[serde(default)]
     pub database: Option<String>,
     #[serde(default)]

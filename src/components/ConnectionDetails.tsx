@@ -19,7 +19,7 @@ export function ConnectionDetails() {
   const rows: [string, string][] = [
     ["Host", connection.host],
     ["Port", String(connection.port)],
-    ["Initial Database", connection.database ?? "(default)"],
+    ["Initial Database", connection.database ?? "postgres (default)"],
     ["User Name", connection.username],
     ["SSL Mode", SSL_MODES.find((m) => m.value === connection.sslMode)?.label ?? connection.sslMode],
   ];

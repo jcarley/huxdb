@@ -51,3 +51,18 @@ export function newConnection(): ConnectionConfig {
     color: null,
   };
 }
+
+// Mirrors `src-tauri/src/explorer/postgres.rs`.
+
+/** A function or procedure; `arguments` (identity argument types) tells overloads apart. */
+export interface FunctionInfo {
+  name: string;
+  arguments: string;
+}
+
+export interface SchemaObjects {
+  tables: string[];
+  views: string[];
+  materializedViews: string[];
+  functions: FunctionInfo[];
+}

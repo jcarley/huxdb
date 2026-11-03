@@ -172,7 +172,7 @@ function ConnectionForm({ initial }: { initial: ConnectionConfig }) {
               <input
                 className="input input-sm w-full"
                 value={draft.database}
-                placeholder="(defaults to user name)"
+                placeholder="(defaults to postgres)"
                 onChange={(e) => update("database", e.target.value)}
                 autoCapitalize="off"
                 spellCheck={false}

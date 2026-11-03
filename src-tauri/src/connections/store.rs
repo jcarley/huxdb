@@ -42,6 +42,10 @@ impl ConnectionStore {
         self.connections.lock().unwrap().clone()
     }
 
+    pub fn get(&self, id: &str) -> Option<ConnectionConfig> {
+        self.connections.lock().unwrap().iter().find(|c| c.id == id).cloned()
+    }
+
     /// Creates (empty `id`) or updates (existing `id`) a connection and persists
     /// the whole list. Returns the saved connection with its id filled in.
     pub fn save(&self, config: ConnectionConfig) -> Result<ConnectionConfig, String> {
@@ -127,6 +131,7 @@ mod tests {
 
         let saved = store.save(sample("local")).unwrap();
         assert!(!saved.id.is_empty());
+        assert_eq!(store.get(&saved.id), Some(saved.clone()));
 
         let renamed = store
             .save(ConnectionConfig { name: "local-dev".into(), ..saved.clone() })

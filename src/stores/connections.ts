@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import * as api from "../lib/api";
 import type { ConnectionConfig } from "../lib/types";
+import { useExplorer } from "./explorer";
 
 interface ConnectionsState {
   connections: ConnectionConfig[];
@@ -44,6 +45,10 @@ export const useConnections = create<ConnectionsState>((set, get) => ({
 
   save: async (config) => {
     const saved = await api.saveConnection(config);
+    // The backend closed this connection's pools; drop its now-stale tree.
+    const explorer = useExplorer.getState();
+    explorer.forget(saved.id);
+    explorer.select({ kind: "connection", connectionId: saved.id });
     const { connections } = get();
     const exists = connections.some((c) => c.id === saved.id);
     set({
@@ -62,6 +67,7 @@ export const useConnections = create<ConnectionsState>((set, get) => ({
     const target = get().pendingDelete;
     if (!target) return;
     await api.deleteConnection(target.id);
+    useExplorer.getState().forget(target.id);
     set((s) => ({
       connections: s.connections.filter((c) => c.id !== target.id),
       selectedId: s.selectedId === target.id ? null : s.selectedId,
