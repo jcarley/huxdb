@@ -3,7 +3,7 @@
 // Commands reject with a plain error string.
 
 import { invoke } from "@tauri-apps/api/core";
-import type { ConnectionConfig, SchemaObjects } from "./types";
+import type { ConnectionConfig, SchemaObjects, TableInfo } from "./types";
 
 export const listConnections = () => invoke<ConnectionConfig[]>("list_connections");
 
@@ -29,5 +29,8 @@ export const listSchemas = (connectionId: string, database: string) =>
 
 export const listSchemaObjects = (connectionId: string, database: string, schema: string) =>
   invoke<SchemaObjects>("list_schema_objects", { connectionId, database, schema });
+
+export const listTables = (connectionId: string, database: string, schema: string) =>
+  invoke<TableInfo[]>("list_tables", { connectionId, database, schema });
 
 export const errorMessage = (err: unknown) => (typeof err === "string" ? err : String(err));

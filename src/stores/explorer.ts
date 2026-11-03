@@ -38,6 +38,14 @@ export function nodeKey(node: TreeNodeRef): string {
   }
 }
 
+/** A group or object node, i.e. one that lives under a schema's object group. */
+type GroupedRef = Extract<TreeNodeRef, { kind: "group" | "object" }>;
+
+/** Whether `node` is a schema's Tables group or a table under it; the details pane shows the tables list then. */
+export function isTablesSelection(node: TreeNodeRef | null): node is GroupedRef {
+  return (node?.kind === "group" || node?.kind === "object") && node.group === "tables";
+}
+
 const isWithin = (key: string, ancestor: string) => key === ancestor || key.startsWith(ancestor + SEP);
 const isBelow = (key: string, ancestor: string) => key.startsWith(ancestor + SEP);
 
@@ -60,6 +68,8 @@ interface ExplorerState {
   /** Objects per schema key. */
   objects: Record<string, SchemaObjects>;
   selectedKey: string | null;
+  /** The node behind `selectedKey`; drives the details pane. */
+  selected: TreeNodeRef | null;
 
   /** Expands a node, loading its children the first time (or after an error). */
   expand: (node: TreeNodeRef) => void;
@@ -68,6 +78,8 @@ interface ExplorerState {
   /** Re-runs a node's load; its descendants are collapsed and reloaded when reopened. */
   refresh: (node: TreeNodeRef) => void;
   select: (node: TreeNodeRef) => void;
+  /** Selects the Tables group of the selected node's schema (expanding the schema). No-op outside a schema. */
+  showTables: () => void;
   /** Closes the connection's pools in the backend and forgets its tree state. */
   closeConnection: (connectionId: string) => Promise<void>;
   /** Drops all tree state for a connection (e.g. after it was edited or deleted). */
@@ -84,7 +96,7 @@ export const useExplorer = create<ExplorerState>((set, get) => {
       databases: omitKeys(s.databases, drop),
       schemas: omitKeys(s.schemas, drop),
       objects: omitKeys(s.objects, drop),
-      selectedKey: s.selectedKey && drop(s.selectedKey) ? null : s.selectedKey,
+      ...(s.selectedKey && drop(s.selectedKey) ? { selectedKey: null, selected: null } : {}),
     }));
   };
 
@@ -133,6 +145,7 @@ export const useExplorer = create<ExplorerState>((set, get) => {
     schemas: {},
     objects: {},
     selectedKey: null,
+    selected: null,
 
     expand: (node) => {
       const key = nodeKey(node);
@@ -159,8 +172,16 @@ export const useExplorer = create<ExplorerState>((set, get) => {
     },
 
     select: (node) => {
-      set({ selectedKey: nodeKey(node) });
+      set({ selectedKey: nodeKey(node), selected: node });
       useConnections.getState().select(node.connectionId);
+    },
+
+    showTables: () => {
+      const node = get().selected;
+      if (!node || !("schema" in node)) return;
+      const { connectionId, database, schema } = node;
+      get().expand({ kind: "schema", connectionId, database, schema });
+      get().select({ kind: "group", connectionId, database, schema, group: "tables" });
     },
 
     closeConnection: async (connectionId) => {

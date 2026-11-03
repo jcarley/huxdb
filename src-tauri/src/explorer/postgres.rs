@@ -21,6 +21,20 @@ pub struct FunctionInfo {
     pub arguments: String,
 }
 
+/// One row of the details pane's tables list.
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TableInfo {
+    pub name: String,
+    /// Planner estimate (`pg_class.reltuples`); `None` if never analyzed or partitioned.
+    pub rows: Option<i64>,
+    pub oid: i64,
+    pub owner: String,
+    /// Created by initdb (OID below `FirstNormalObjectId`, 16384).
+    pub system_table: bool,
+    pub comment: Option<String>,
+}
+
 fn err(e: sqlx::Error) -> String {
     e.to_string()
 }
@@ -83,6 +97,40 @@ pub async fn list_schema_objects(pool: &PgPool, schema: &str) -> Result<SchemaOb
     Ok(objects)
 }
 
+/// Columns of `list_tables`' query, in `TableInfo` field order.
+type TableRow = (String, Option<i64>, i64, String, bool, Option<String>);
+
+/// Ordinary and partitioned tables in `schema`, the same set the tree's Tables group shows.
+pub async fn list_tables(pool: &PgPool, schema: &str) -> Result<Vec<TableInfo>, String> {
+    let rows: Vec<TableRow> = sqlx::query_as(
+        "SELECT c.relname::text,
+                CASE WHEN c.reltuples < 0 THEN NULL ELSE c.reltuples::int8 END,
+                c.oid::int8,
+                pg_get_userbyid(c.relowner)::text,
+                c.oid < 16384,
+                obj_description(c.oid, 'pg_class')
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = $1 AND c.relkind IN ('r', 'p')
+         ORDER BY c.relname",
+    )
+    .bind(schema)
+    .fetch_all(pool)
+    .await
+    .map_err(err)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(name, rows, oid, owner, system_table, comment)| TableInfo {
+            name,
+            rows,
+            oid,
+            owner,
+            system_table,
+            comment,
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,7 +159,8 @@ mod tests {
              CREATE MATERIALIZED VIEW huxdb_tree_test.a_matview AS SELECT 1 AS x;
              CREATE FUNCTION huxdb_tree_test.f(a int) RETURNS int LANGUAGE sql AS 'SELECT a';
              CREATE FUNCTION huxdb_tree_test.f(a int, b text) RETURNS int LANGUAGE sql AS 'SELECT a';
-             CREATE PROCEDURE huxdb_tree_test.p() LANGUAGE sql AS 'SELECT 1';",
+             CREATE PROCEDURE huxdb_tree_test.p() LANGUAGE sql AS 'SELECT 1';
+             COMMENT ON TABLE huxdb_tree_test.a_table IS 'hello';",
         )
         .execute(&pool)
         .await
@@ -123,6 +172,8 @@ mod tests {
         assert!(schemas.contains(&"pg_catalog".to_string()));
 
         let objects = list_schema_objects(&pool, "huxdb_tree_test").await.unwrap();
+        let tables = list_tables(&pool, "huxdb_tree_test").await.unwrap();
+        let catalog = list_tables(&pool, "pg_catalog").await.unwrap();
         sqlx::raw_sql("DROP SCHEMA huxdb_tree_test CASCADE").execute(&pool).await.unwrap();
 
         assert_eq!(objects.tables, ["a_table", "b_table"]);
@@ -130,5 +181,17 @@ mod tests {
         assert_eq!(objects.materialized_views, ["a_matview"]);
         let fns: Vec<_> = objects.functions.iter().map(|f| format!("{}({})", f.name, f.arguments)).collect();
         assert_eq!(fns, ["f(a integer)", "f(a integer, b text)", "p()"]);
+
+        let names: Vec<_> = tables.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["a_table", "b_table"]);
+        let a = &tables[0];
+        assert_eq!(a.comment.as_deref(), Some("hello"));
+        assert_eq!(a.owner, "postgres");
+        assert!(!a.system_table);
+        assert_eq!(a.rows, None, "never analyzed");
+        assert_eq!(tables[1].comment, None);
+
+        let pg_class = catalog.iter().find(|t| t.name == "pg_class").unwrap();
+        assert!(pg_class.system_table);
     }
 }

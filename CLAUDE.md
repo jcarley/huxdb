@@ -12,7 +12,7 @@ huxdb is a desktop database management tool modeled on Navicat (reference for fe
 
 ## Project state
 
-Built so far: saved PostgreSQL connection profiles (create / edit / delete / test), the main window shell (toolbar, sidebar, details pane), and a lazily loaded object tree in the sidebar (Connection → Databases → Schemas → Tables / Views / Materialized Views / Functions). Selecting a tree object shows no detail view yet, and nothing runs queries.
+Built so far: saved PostgreSQL connection profiles (create / edit / delete / test), the main window shell (toolbar, sidebar, details pane), and a lazily loaded object tree in the sidebar (Connection → Databases → Schemas → Tables / Views / Materialized Views / Functions). Selecting a schema's Tables group (or a table under it) shows a Navicat-style tables list in the main pane (Name, Rows, OID, Owner, System Table, Comment) under an object toolbar whose Open / Design / New / Delete / Import / Export buttons are mocked: they enable with the row selection but do nothing yet. Other selections show the connection details, and nothing runs user queries. The main toolbar has Connection, New Query (mocked, no-op), a separator, and Tables: Tables is enabled when the tree selection is inside a schema, selects that schema's Tables group via the explorer store's `showTables()`, and shows as pressed while `isTablesSelection()` holds.
 
 Rust has unit tests; the frontend has no test framework, so `npm run build` (tsc strict) is its only check. No linter or formatter config beyond defaults.
 
@@ -43,13 +43,13 @@ Vite uses a fixed port (1420, `strictPort`); if it is taken, `tauri dev` fails r
 
 ## Architecture
 
-- **Frontend (`src/`)**: `App.tsx` lays out the Navicat-style shell: `Toolbar` (one big icon button per module; add buttons there as modules are built), `Sidebar` (the object tree), and the main pane. Dialogs (`ConnectionDialog`, `ConfirmDeleteDialog`) are always mounted and render only when the store says so; each keys its inner form by connection id so its local state resets. `components/Modal.tsx` wraps a native `<dialog>` with daisyUI classes.
+- **Frontend (`src/`)**: `App.tsx` lays out the Navicat-style shell: `Toolbar` (one big icon button per module; add buttons there as modules are built), `Sidebar` (the object tree), and the main pane (`DetailsPane`). `DetailsPane` picks a view from the explorer's selected node: `tables/TablesView` (with `tables/ObjectToolbar`) for the Tables group or a table, otherwise `ConnectionDetails`. Add new object views there. Dialogs (`ConnectionDialog`, `ConfirmDeleteDialog`) are always mounted and render only when the store says so; each keys its inner form by connection id so its local state resets. `components/Modal.tsx` wraps a native `<dialog>` with daisyUI classes.
 - **State**: Zustand stores in `src/stores/`. `stores/connections.ts` owns the connection list, the selected connection, and which dialog is open, so any component can open the editor or the delete prompt without passing props down.
 - **Object tree**: `stores/explorer.ts` plus `components/tree/`.
   - Every node is identified by a `TreeNodeRef`. `nodeKey()` turns it into a string key that is a prefix of all its descendants' keys; parts are joined with `\u001f`. Prefix matching on these keys is how a refresh or a closed connection drops a whole subtree.
   - Connection, database and schema nodes load their children from the backend on first expand. Group and object nodes are just views of the schema's data.
   - A per-key request counter discards responses that arrive after the node was refreshed or closed.
-  - Selecting a tree node also sets the connections store's selected connection, which drives the details pane.
+  - Selecting a tree node stores both `selectedKey` (cheap per-row highlight checks) and `selected` (the `TreeNodeRef`, which `DetailsPane` reads), and also sets the connections store's selected connection.
   - Saving or deleting a connection calls `forget(id)` to drop its tree.
   - `TreeNode.tsx` is the generic row. `ContextMenu.tsx` is the one app-wide right-click menu (`useContextMenu().open(e, items)`).
 - **IPC contract**: `src/lib/api.ts` holds typed `invoke` wrappers, and `src/lib/types.ts` mirrors the Rust structs. Rust serializes with `#[serde(rename_all = "camelCase")]` (enums use kebab-case), so TS types match Rust field names converted to camelCase. When you change a Rust model, update `types.ts` too. Commands return `Result<T, String>`, so a rejected promise carries a plain string.
@@ -58,7 +58,7 @@ Vite uses a fixed port (1420, `strictPort`); if it is taken, `tauri dev` fails r
   - `connections/model.rs`: `ConnectionConfig` with `normalized()` and `validate()`. The UI repeats these checks in `ConnectionDialog.tsx` so it can show errors per field, but Rust has the final say.
   - `connections/store.rs`: `ConnectionStore` (Tauri managed state) keeps the list behind a `Mutex` and writes `connections.json` in the app config dir (macOS: `~/Library/Application Support/com.bluetarpsoftware.huxdb/`). Each save writes a temp file and renames it into place, with `0600` permissions on Unix. Passwords are stored in plain text there by deliberate decision. A file that can't be parsed is renamed to `connections.json.corrupt`, never overwritten.
   - `connections/postgres.rs`: PostgreSQL connect options (sqlx 0.9 with tokio runtime and native-tls) and Test Connection. With no Initial Database set, huxdb connects to `postgres`, as Navicat does.
-  - `explorer/`: the tree's commands (`open_connection`, `close_connection`, `list_schemas`, `list_schema_objects`).
+  - `explorer/`: the tree's commands (`open_connection`, `close_connection`, `list_schemas`, `list_schema_objects`) and the details pane's `list_tables`.
     - `sessions.rs` (`SessionManager`, managed state) keeps one lazy `PgPool` per (connection id, database), because a PostgreSQL connection can't switch databases. Saving or deleting a connection closes its pools.
     - `postgres.rs` holds the catalog queries. Names are always passed as bind parameters.
   - PostgreSQL-specific code lives only in the `postgres.rs` files; future database engines get sibling modules.

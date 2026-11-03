@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { ConfirmDeleteDialog } from "./components/ConfirmDeleteDialog";
-import { ConnectionDetails } from "./components/ConnectionDetails";
 import { ConnectionDialog } from "./components/ConnectionDialog";
+import { DetailsPane } from "./components/DetailsPane";
 import { Sidebar } from "./components/Sidebar";
 import { Toolbar } from "./components/Toolbar";
 import { useConnections } from "./stores/connections";
@@ -19,7 +19,7 @@ function App() {
       <Toolbar />
       <div className="flex min-h-0 flex-1">
         <Sidebar />
-        <ConnectionDetails />
+        <DetailsPane />
       </div>
       <ConnectionDialog />
       <ConfirmDeleteDialog />

@@ -24,6 +24,7 @@ pub fn run() {
             explorer::close_connection,
             explorer::list_schemas,
             explorer::list_schema_objects,
+            explorer::list_tables,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

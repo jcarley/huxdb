@@ -66,3 +66,15 @@ export interface SchemaObjects {
   materializedViews: string[];
   functions: FunctionInfo[];
 }
+
+/** One row of the details pane's tables list. */
+export interface TableInfo {
+  name: string;
+  /** Planner estimate; null if the table was never analyzed or is partitioned. */
+  rows: number | null;
+  oid: number;
+  owner: string;
+  /** Created by initdb (OID below 16384). */
+  systemTable: boolean;
+  comment: string | null;
+}
