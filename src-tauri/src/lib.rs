@@ -28,6 +28,7 @@ pub fn run() {
             explorer::list_tables,
             explorer::list_views,
             designer::load_table_design,
+            designer::list_table_columns,
             designer::preview_table_ddl,
             designer::save_table_design,
         ])

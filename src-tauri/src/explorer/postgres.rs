@@ -27,6 +27,8 @@ pub struct FunctionInfo {
 pub struct TableInfo {
     pub name: String,
     /// Planner estimate (`pg_class.reltuples`); `None` if never analyzed or partitioned.
+    /// Before PostgreSQL 14 "never analyzed" was 0 rows in 0 pages rather than -1,
+    /// so on those servers an analyzed empty table shows as unknown too.
     pub rows: Option<i64>,
     pub oid: i64,
     pub owner: String,
@@ -116,7 +118,10 @@ type TableRow = (String, Option<i64>, i64, String, bool, Option<String>);
 pub async fn list_tables(pool: &PgPool, schema: &str) -> Result<Vec<TableInfo>, String> {
     let rows: Vec<TableRow> = sqlx::query_as(
         "SELECT c.relname::text,
-                CASE WHEN c.reltuples < 0 THEN NULL ELSE c.reltuples::int8 END,
+                CASE WHEN c.reltuples < 0
+                       OR (current_setting('server_version_num')::int < 140000
+                           AND c.reltuples = 0 AND c.relpages = 0)
+                     THEN NULL ELSE c.reltuples::int8 END,
                 c.oid::int8,
                 pg_get_userbyid(c.relowner)::text,
                 c.oid < 16384,

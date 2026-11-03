@@ -46,6 +46,87 @@ pub struct TableDesign {
     /// Name of the existing primary key constraint; `None` lets PostgreSQL pick one.
     pub primary_key_name: Option<String>,
     pub columns: Vec<ColumnDesign>,
+    #[serde(default)]
+    pub indexes: Vec<IndexDesign>,
+    #[serde(default)]
+    pub foreign_keys: Vec<ForeignKeyDesign>,
+    #[serde(default)]
+    pub uniques: Vec<UniqueDesign>,
+    #[serde(default)]
+    pub checks: Vec<CheckDesign>,
+}
+
+/// One key of an index: a column name, or an expression when it names no column.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexColumn {
+    pub column: String,
+    pub descending: bool,
+}
+
+/// An index that doesn't back a constraint (those show on the constraint tabs).
+/// Operator classes, collations, NULLS ordering and INCLUDE columns aren't
+/// modeled; an edited index is re-created without them.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexDesign {
+    /// Name when loaded, or `None` for an index added in the designer.
+    pub original_name: Option<String>,
+    /// Blank lets PostgreSQL pick a name.
+    pub name: String,
+    pub columns: Vec<IndexColumn>,
+    /// Access method: btree, hash, gist, spgist, gin, brin.
+    pub method: String,
+    pub unique: bool,
+    /// Partial index condition (the WHERE clause).
+    pub predicate: Option<String>,
+    pub comment: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ForeignKeyAction {
+    #[default]
+    NoAction,
+    Restrict,
+    Cascade,
+    SetNull,
+    SetDefault,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ForeignKeyDesign {
+    pub original_name: Option<String>,
+    pub name: String,
+    pub columns: Vec<String>,
+    pub ref_schema: String,
+    pub ref_table: String,
+    /// Referenced columns, paired by position with `columns`.
+    pub ref_columns: Vec<String>,
+    pub on_update: ForeignKeyAction,
+    pub on_delete: ForeignKeyAction,
+    pub comment: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UniqueDesign {
+    pub original_name: Option<String>,
+    pub name: String,
+    pub columns: Vec<String>,
+    pub comment: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckDesign {
+    pub original_name: Option<String>,
+    pub name: String,
+    /// Boolean SQL expression, without the CHECK keyword.
+    pub expression: String,
+    pub no_inherit: bool,
+    pub comment: Option<String>,
 }
 
 /// Trims text and turns blank optional text into `None`.
@@ -69,6 +150,85 @@ impl ColumnDesign {
     }
 }
 
+/// Trims each name and drops blank ones.
+fn clean_list(names: &[String]) -> Vec<String> {
+    names.iter().map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).collect()
+}
+
+impl IndexDesign {
+    fn normalized(&self) -> Self {
+        Self {
+            name: self.name.trim().to_string(),
+            columns: self
+                .columns
+                .iter()
+                .map(|c| IndexColumn { column: c.column.trim().to_string(), ..c.clone() })
+                .filter(|c| !c.column.is_empty())
+                .collect(),
+            method: match self.method.trim() {
+                "" => "btree".to_string(),
+                m => m.to_lowercase(),
+            },
+            predicate: clean(&self.predicate),
+            comment: clean(&self.comment),
+            ..self.clone()
+        }
+    }
+}
+
+impl ForeignKeyDesign {
+    fn normalized(&self) -> Self {
+        Self {
+            name: self.name.trim().to_string(),
+            columns: clean_list(&self.columns),
+            ref_schema: self.ref_schema.trim().to_string(),
+            ref_table: self.ref_table.trim().to_string(),
+            ref_columns: clean_list(&self.ref_columns),
+            comment: clean(&self.comment),
+            ..self.clone()
+        }
+    }
+}
+
+impl UniqueDesign {
+    fn normalized(&self) -> Self {
+        Self {
+            name: self.name.trim().to_string(),
+            columns: clean_list(&self.columns),
+            comment: clean(&self.comment),
+            ..self.clone()
+        }
+    }
+}
+
+impl CheckDesign {
+    fn normalized(&self) -> Self {
+        Self {
+            name: self.name.trim().to_string(),
+            expression: self.expression.trim().to_string(),
+            comment: clean(&self.comment),
+            ..self.clone()
+        }
+    }
+}
+
+/// How validation names the n-th item of a tab: `Index "name"` or `Index 2`.
+fn label(kind: &str, index: usize, name: &str) -> String {
+    if name.is_empty() { format!("{kind} {}", index + 1) } else { format!("{kind} \"{name}\"") }
+}
+
+/// A named object's shared rules: an existing object keeps a name, and a
+/// comment needs one (COMMENT ON addresses objects by name).
+fn check_name(label: &str, original_name: &Option<String>, name: &str, comment: &Option<String>) -> Result<(), String> {
+    if name.is_empty() && original_name.is_some() {
+        return Err(format!("{label}: an existing object needs a name."));
+    }
+    if name.is_empty() && comment.is_some() {
+        return Err(format!("{label}: a name is required to add a comment."));
+    }
+    Ok(())
+}
+
 impl TableDesign {
     /// Trims names and types, and blanks out empty defaults and comments.
     pub fn normalized(&self) -> Self {
@@ -78,6 +238,10 @@ impl TableDesign {
             comment: clean(&self.comment),
             primary_key_name: clean(&self.primary_key_name),
             columns: self.columns.iter().map(ColumnDesign::normalized).collect(),
+            indexes: self.indexes.iter().map(IndexDesign::normalized).collect(),
+            foreign_keys: self.foreign_keys.iter().map(ForeignKeyDesign::normalized).collect(),
+            uniques: self.uniques.iter().map(UniqueDesign::normalized).collect(),
+            checks: self.checks.iter().map(CheckDesign::normalized).collect(),
         }
     }
 
@@ -114,6 +278,68 @@ impl TableDesign {
             let kinds = [c.default.is_some(), c.identity.is_some(), c.generated.is_some()];
             if kinds.iter().filter(|&&k| k).count() > 1 {
                 return Err(format!("{label}: a field can have only one of a default, an identity or a generated expression."));
+            }
+        }
+        self.validate_constraints(&names)
+    }
+
+    fn validate_constraints(&self, columns: &HashSet<&str>) -> Result<(), String> {
+        let missing = |label: &str, list: &[String]| -> Result<(), String> {
+            match list.iter().find(|c| !columns.contains(c.as_str())) {
+                Some(c) => Err(format!("{label}: there is no field \"{c}\".")),
+                None => Ok(()),
+            }
+        };
+        for (i, x) in self.indexes.iter().enumerate() {
+            let label = label("Index", i, &x.name);
+            check_name(&label, &x.original_name, &x.name, &x.comment)?;
+            if x.columns.is_empty() {
+                return Err(format!("{label}: choose at least one field."));
+            }
+        }
+        for (i, x) in self.foreign_keys.iter().enumerate() {
+            let label = label("Foreign key", i, &x.name);
+            check_name(&label, &x.original_name, &x.name, &x.comment)?;
+            if x.columns.is_empty() {
+                return Err(format!("{label}: choose at least one field."));
+            }
+            missing(&label, &x.columns)?;
+            if x.ref_schema.is_empty() || x.ref_table.is_empty() {
+                return Err(format!("{label}: choose the referenced table."));
+            }
+            if x.ref_columns.len() != x.columns.len() {
+                return Err(format!("{label}: choose one referenced field for each field."));
+            }
+        }
+        for (i, x) in self.uniques.iter().enumerate() {
+            let label = label("Unique", i, &x.name);
+            check_name(&label, &x.original_name, &x.name, &x.comment)?;
+            if x.columns.is_empty() {
+                return Err(format!("{label}: choose at least one field."));
+            }
+            missing(&label, &x.columns)?;
+        }
+        for (i, x) in self.checks.iter().enumerate() {
+            let label = label("Check", i, &x.name);
+            check_name(&label, &x.original_name, &x.name, &x.comment)?;
+            if x.expression.is_empty() {
+                return Err(format!("{label}: the expression is required."));
+            }
+        }
+
+        let named = self
+            .indexes
+            .iter()
+            .map(|x| ("Index", &x.name))
+            .chain(self.foreign_keys.iter().map(|x| ("Foreign key", &x.name)))
+            .chain(self.uniques.iter().map(|x| ("Unique", &x.name)))
+            .chain(self.checks.iter().map(|x| ("Check", &x.name)));
+        // Constraint and index names must be distinct: unique constraints and
+        // indexes even share the schema's relation namespace.
+        let mut taken: HashSet<&str> = self.primary_key_name.iter().map(String::as_str).collect();
+        for (kind, name) in named {
+            if !name.is_empty() && !taken.insert(name) {
+                return Err(format!("{kind} \"{name}\": the name is used by another index or constraint."));
             }
         }
         Ok(())

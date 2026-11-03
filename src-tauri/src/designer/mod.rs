@@ -24,6 +24,20 @@ pub async fn load_table_design(
     postgres::load_table_design(&pool, &schema, &table).await
 }
 
+/// Column names of a table, for a foreign key's referenced fields.
+#[tauri::command]
+pub async fn list_table_columns(
+    store: State<'_, ConnectionStore>,
+    sessions: State<'_, SessionManager>,
+    connection_id: String,
+    database: String,
+    schema: String,
+    table: String,
+) -> Result<Vec<String>, String> {
+    let pool = pool_for(&store, &sessions, &connection_id, Some(&database))?;
+    postgres::list_columns(&pool, &schema, &table).await
+}
+
 /// Normalizes and validates both designs; the original is only normalized,
 /// since it came from the server.
 fn prepare(original: Option<TableDesign>, edited: TableDesign) -> Result<(Option<TableDesign>, TableDesign), String> {

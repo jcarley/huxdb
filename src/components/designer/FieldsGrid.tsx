@@ -1,4 +1,4 @@
-import { createContext, useContext } from "react";
+import { useContext } from "react";
 import type { KeyboardEvent } from "react";
 import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
 import { KeyRound } from "lucide-react";
@@ -6,11 +6,10 @@ import { PG_TYPES } from "../../lib/pgTypes";
 import type { ColumnDesign, Identity } from "../../lib/types";
 import { columnErrors, useTableDesigner } from "../../stores/tableDesigner";
 import type { Designer } from "../../stores/tableDesigner";
+import { DesignerId } from "./context";
 
 const TYPES_LIST_ID = "huxdb-pg-types";
 
-/** Tab id of the designer the grid's cells belong to. */
-const DesignerId = createContext("");
 
 /** Arrow Up/Down moves to the same cell in the row above/below, like Navicat's grid. */
 function moveFocus(e: KeyboardEvent<HTMLElement>, row: number, column: string) {

@@ -1,21 +1,52 @@
 import { useEffect, useState } from "react";
-import type { FormEvent } from "react";
+import type { ComponentType, FormEvent } from "react";
 import { ArrowDown, ArrowUp, KeyRound, ListPlus, Plus, RotateCw, Save, Trash2 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import * as api from "../../lib/api";
-import { useTableDesigner } from "../../stores/tableDesigner";
-import type { Designer } from "../../stores/tableDesigner";
+import { columnErrors, objectErrors, useTableDesigner } from "../../stores/tableDesigner";
+import type { Designer, ObjectKind } from "../../stores/tableDesigner";
 import { Modal } from "../Modal";
 import { SqlEditor } from "../SqlEditor";
 import { FieldsGrid } from "./FieldsGrid";
+import { ChecksGrid, ForeignKeysGrid, IndexesGrid, UniquesGrid } from "./ObjectGrids";
 
-type DesignerTabName = "fields" | "comment" | "sql";
+type DesignerTabName = "fields" | ObjectKind | "comment" | "sql";
 
 const SUB_TABS: { tab: DesignerTabName; label: string }[] = [
   { tab: "fields", label: "Fields" },
+  { tab: "indexes", label: "Indexes" },
+  { tab: "foreignKeys", label: "Foreign Keys" },
+  { tab: "uniques", label: "Uniques" },
+  { tab: "checks", label: "Checks" },
   { tab: "comment", label: "Comment" },
   { tab: "sql", label: "SQL Preview" },
 ];
+
+/** What the toolbar's Add / Delete buttons call the rows of each object tab. */
+const OBJECT_NOUNS: Record<ObjectKind, string> = {
+  indexes: "Index",
+  foreignKeys: "Foreign Key",
+  uniques: "Unique",
+  checks: "Check",
+};
+
+const OBJECT_GRIDS: Record<ObjectKind, ComponentType<{ id: string }>> = {
+  indexes: IndexesGrid,
+  foreignKeys: ForeignKeysGrid,
+  uniques: UniquesGrid,
+  checks: ChecksGrid,
+};
+
+const isObjectTab = (tab: DesignerTabName): tab is ObjectKind => tab in OBJECT_NOUNS;
+
+/** Whether a sub-tab has a cell to fix, once errors show. */
+function tabHasErrors(designer: Designer, tab: DesignerTabName): boolean {
+  if (!designer.showErrors) return false;
+  const { edited } = designer;
+  if (tab === "fields") return edited.columns.some((_, row) => Object.keys(columnErrors(edited.columns, row)).length > 0);
+  if (isObjectTab(tab)) return edited[tab].some((_, row) => Object.keys(objectErrors(edited, tab, row)).length > 0);
+  return false;
+}
 
 function ToolButton({ icon: Icon, label, disabled, onClick }: { icon: LucideIcon; label: string; disabled?: boolean; onClick: () => void }) {
   return (
@@ -36,6 +67,7 @@ export function TableDesigner({ id }: { id: string }) {
   const isNew = designer.original === null;
   const hasRow = designer.selectedRow !== null;
   const lastRow = designer.edited.columns.length - 1;
+  const ObjectGrid = isObjectTab(subTab) ? OBJECT_GRIDS[subTab] : null;
 
   if (designer.status !== "loaded") {
     return (
@@ -58,15 +90,31 @@ export function TableDesigner({ id }: { id: string }) {
     <section className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex items-center gap-0.5 border-b border-base-300 bg-base-200/50 px-2 py-1">
         <ToolButton icon={Save} label="Save" disabled={designer.saving} onClick={() => store.requestSave(id)} />
-        <div className="divider divider-horizontal mx-1 my-1" />
-        <ToolButton icon={Plus} label="Add Field" onClick={() => store.addColumn(id)} />
-        {isNew && <ToolButton icon={ListPlus} label="Insert Field" onClick={() => store.insertColumn(id)} />}
-        <ToolButton icon={Trash2} label="Delete Field" disabled={!hasRow} onClick={() => store.deleteColumn(id)} />
-        <ToolButton icon={KeyRound} label="Primary Key" disabled={!hasRow} onClick={() => store.toggleKey(id)} />
-        {isNew && (
+        {subTab === "fields" && (
           <>
-            <ToolButton icon={ArrowUp} label="Move Up" disabled={!hasRow || designer.selectedRow === 0} onClick={() => store.moveColumn(id, -1)} />
-            <ToolButton icon={ArrowDown} label="Move Down" disabled={!hasRow || designer.selectedRow === lastRow} onClick={() => store.moveColumn(id, 1)} />
+            <div className="divider divider-horizontal mx-1 my-1" />
+            <ToolButton icon={Plus} label="Add Field" onClick={() => store.addColumn(id)} />
+            {isNew && <ToolButton icon={ListPlus} label="Insert Field" onClick={() => store.insertColumn(id)} />}
+            <ToolButton icon={Trash2} label="Delete Field" disabled={!hasRow} onClick={() => store.deleteColumn(id)} />
+            <ToolButton icon={KeyRound} label="Primary Key" disabled={!hasRow} onClick={() => store.toggleKey(id)} />
+            {isNew && (
+              <>
+                <ToolButton icon={ArrowUp} label="Move Up" disabled={!hasRow || designer.selectedRow === 0} onClick={() => store.moveColumn(id, -1)} />
+                <ToolButton icon={ArrowDown} label="Move Down" disabled={!hasRow || designer.selectedRow === lastRow} onClick={() => store.moveColumn(id, 1)} />
+              </>
+            )}
+          </>
+        )}
+        {isObjectTab(subTab) && (
+          <>
+            <div className="divider divider-horizontal mx-1 my-1" />
+            <ToolButton icon={Plus} label={`Add ${OBJECT_NOUNS[subTab]}`} onClick={() => store.addObject(id, subTab)} />
+            <ToolButton
+              icon={Trash2}
+              label={`Delete ${OBJECT_NOUNS[subTab]}`}
+              disabled={designer.selectedObjects[subTab] === null}
+              onClick={() => store.deleteObject(id, subTab)}
+            />
           </>
         )}
         {designer.saving && <span className="loading loading-spinner loading-sm ml-2" />}
@@ -74,8 +122,9 @@ export function TableDesigner({ id }: { id: string }) {
 
       <div role="tablist" className="tabs tabs-border tabs-sm border-b border-base-300 px-2">
         {SUB_TABS.map(({ tab, label }) => (
-          <button key={tab} type="button" role="tab" className={`tab ${subTab === tab ? "tab-active" : ""}`} onClick={() => setSubTab(tab)}>
+          <button key={tab} type="button" role="tab" className={`tab gap-1 ${subTab === tab ? "tab-active" : ""}`} onClick={() => setSubTab(tab)}>
             {label}
+            {tabHasErrors(designer, tab) && <span className="status status-error" aria-label="Has errors" />}
           </button>
         ))}
       </div>
@@ -87,6 +136,7 @@ export function TableDesigner({ id }: { id: string }) {
       )}
 
       {subTab === "fields" && <FieldsGrid id={id} designer={designer} />}
+      {ObjectGrid && <ObjectGrid id={id} />}
       {subTab === "comment" && (
         <textarea
           className="textarea m-3 min-h-40 w-auto max-w-2xl"

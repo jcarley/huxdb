@@ -118,7 +118,90 @@ export interface TableDesign {
   comment: string | null;
   primaryKeyName: string | null;
   columns: ColumnDesign[];
+  indexes: IndexDesign[];
+  foreignKeys: ForeignKeyDesign[];
+  uniques: UniqueDesign[];
+  checks: CheckDesign[];
 }
+
+/** An index key: a column name, or an expression when it names no column. */
+export interface IndexColumn {
+  column: string;
+  descending: boolean;
+}
+
+/** Indexes backing a primary key or unique constraint show on those tabs, not here. */
+export interface IndexDesign {
+  originalName: string | null;
+  /** Blank lets PostgreSQL pick a name. */
+  name: string;
+  columns: IndexColumn[];
+  method: string;
+  unique: boolean;
+  /** Partial index condition (the WHERE clause). */
+  predicate: string | null;
+  comment: string | null;
+}
+
+export const FOREIGN_KEY_ACTIONS = ["no-action", "restrict", "cascade", "set-null", "set-default"] as const;
+export type ForeignKeyAction = (typeof FOREIGN_KEY_ACTIONS)[number];
+
+export interface ForeignKeyDesign {
+  originalName: string | null;
+  name: string;
+  columns: string[];
+  refSchema: string;
+  refTable: string;
+  /** Referenced fields, paired by position with `columns`. */
+  refColumns: string[];
+  onUpdate: ForeignKeyAction;
+  onDelete: ForeignKeyAction;
+  comment: string | null;
+}
+
+export interface UniqueDesign {
+  originalName: string | null;
+  name: string;
+  columns: string[];
+  comment: string | null;
+}
+
+export interface CheckDesign {
+  originalName: string | null;
+  name: string;
+  /** Boolean SQL expression without the CHECK keyword. */
+  expression: string;
+  noInherit: boolean;
+  comment: string | null;
+}
+
+export const INDEX_METHODS = ["btree", "hash", "gist", "spgist", "gin", "brin"];
+
+export const newIndex = (): IndexDesign => ({
+  originalName: null,
+  name: "",
+  columns: [],
+  method: "btree",
+  unique: false,
+  predicate: null,
+  comment: null,
+});
+
+export const newForeignKey = (refSchema: string): ForeignKeyDesign => ({
+  originalName: null,
+  name: "",
+  columns: [],
+  refSchema,
+  refTable: "",
+  refColumns: [],
+  onUpdate: "no-action",
+  onDelete: "no-action",
+  comment: null,
+});
+
+export const newUnique = (): UniqueDesign => ({ originalName: null, name: "", columns: [], comment: null });
+
+export const newCheck = (): CheckDesign => ({ originalName: null, name: "", expression: "", noInherit: false, comment: null });
 
 export const newColumn = (): ColumnDesign => ({
   originalName: null,

@@ -41,6 +41,10 @@ export const listViews = (connectionId: string, database: string, schema: string
 export const loadTableDesign = (connectionId: string, database: string, schema: string, table: string) =>
   invoke<TableDesign>("load_table_design", { connectionId, database, schema, table });
 
+/** Column names of a table, for a foreign key's referenced fields. */
+export const listTableColumns = (connectionId: string, database: string, schema: string, table: string) =>
+  invoke<string[]>("list_table_columns", { connectionId, database, schema, table });
+
 /** The statements Save would run; rejects with a validation error. */
 export const previewTableDdl = (original: TableDesign | null, edited: TableDesign) =>
   invoke<string[]>("preview_table_ddl", { original, edited });
