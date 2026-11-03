@@ -29,6 +29,9 @@ pub fn run() {
             explorer::list_views,
             designer::load_table_design,
             designer::list_table_columns,
+            designer::list_roles,
+            designer::list_tablespaces,
+            designer::list_trigger_functions,
             designer::preview_table_ddl,
             designer::save_table_design,
         ])

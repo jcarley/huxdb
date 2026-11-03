@@ -4,11 +4,11 @@
 import { useEffect, useState } from "react";
 import * as api from "./api";
 
-const cache = new Map<string, Promise<string[]>>();
+const cache = new Map<string, Promise<unknown>>();
 const SEP = "\u001f";
 
-function cached(key: string, load: () => Promise<string[]>): Promise<string[]> {
-  let entry = cache.get(key);
+function cached<T>(key: string, load: () => Promise<T>): Promise<T> {
+  let entry = cache.get(key) as Promise<T> | undefined;
   if (!entry) {
     entry = load();
     // A failed lookup isn't cached, so the next render retries.
@@ -26,10 +26,10 @@ export function invalidateCatalog(connectionId: string, database: string, schema
   }
 }
 
-export type Lookup = { status: "loading" } | { status: "loaded"; names: string[] } | { status: "error"; error: string };
+export type Lookup<T = string> = { status: "loading" } | { status: "loaded"; names: T[] } | { status: "error"; error: string };
 
-function useLookup(key: string | null, load: () => Promise<string[]>): Lookup {
-  const [state, setState] = useState<{ key: string | null; lookup: Lookup }>({ key, lookup: { status: "loading" } });
+function useLookup<T = string>(key: string | null, load: () => Promise<T[]>): Lookup<T> {
+  const [state, setState] = useState<{ key: string | null; lookup: Lookup<T> }>({ key, lookup: { status: "loading" } });
   useEffect(() => {
     if (key === null) return;
     let ignore = false;
@@ -60,3 +60,12 @@ export const useColumns = (connectionId: string, database: string, schema: strin
   useLookup(table ? ["columns", connectionId, database, schema, table].join(SEP) : null, () =>
     api.listTableColumns(connectionId, database, schema, table),
   );
+
+export const useRoles = (connectionId: string, database: string) =>
+  useLookup(["roles", connectionId, database].join(SEP), () => api.listRoles(connectionId, database));
+
+export const useTablespaces = (connectionId: string, database: string) =>
+  useLookup(["tablespaces", connectionId, database].join(SEP), () => api.listTablespaces(connectionId, database));
+
+export const useTriggerFunctions = (connectionId: string, database: string) =>
+  useLookup(["triggerFunctions", connectionId, database].join(SEP), () => api.listTriggerFunctions(connectionId, database));

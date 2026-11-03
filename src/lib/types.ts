@@ -122,6 +122,82 @@ export interface TableDesign {
   foreignKeys: ForeignKeyDesign[];
   uniques: UniqueDesign[];
   checks: CheckDesign[];
+  excludes: ExcludeDesign[];
+  triggers: TriggerDesign[];
+  options: TableOptions;
+}
+
+/** An exclusion constraint element: a column (or expression) and its operator. */
+export interface ExcludeElement {
+  column: string;
+  operator: string;
+}
+
+export interface ExcludeDesign {
+  originalName: string | null;
+  name: string;
+  method: string;
+  elements: ExcludeElement[];
+  predicate: string | null;
+  comment: string | null;
+}
+
+export type TriggerTiming = "before" | "after";
+export const TRIGGER_ENABLED = ["origin", "disabled", "replica", "always"] as const;
+export type TriggerEnabled = (typeof TRIGGER_ENABLED)[number];
+
+export interface TriggerDesign {
+  originalName: string | null;
+  name: string;
+  timing: TriggerTiming;
+  /** FOR EACH ROW; otherwise FOR EACH STATEMENT. */
+  forEachRow: boolean;
+  onInsert: boolean;
+  onUpdate: boolean;
+  onDelete: boolean;
+  onTruncate: boolean;
+  /** UPDATE OF these fields; empty means any field. */
+  updateColumns: string[];
+  /** WHEN condition without its parentheses. */
+  when: string | null;
+  functionSchema: string;
+  functionName: string;
+  /** Arguments as SQL literals, e.g. `'audit', 42`. */
+  arguments: string;
+  enabled: TriggerEnabled;
+  comment: string | null;
+  /** Set for triggers the designer can't edit (constraint triggers, transition tables). */
+  definition: string | null;
+}
+
+export interface QualifiedName {
+  schema: string;
+  name: string;
+}
+
+export const PARTITION_STRATEGIES = ["range", "list", "hash"] as const;
+export type PartitionStrategy = (typeof PARTITION_STRATEGIES)[number];
+
+export interface PartitionDesign {
+  strategy: PartitionStrategy;
+  /** Columns or expressions. */
+  keys: string[];
+}
+
+export interface TableOptions {
+  /** Null on a new table means the current user. */
+  owner: string | null;
+  /** Null means the database's default tablespace. */
+  tablespace: string | null;
+  unlogged: boolean;
+  fillFactor: number | null;
+  inherits: QualifiedName[];
+  /** Only used when creating a table. */
+  partitionBy: PartitionDesign | null;
+  /** Read-only: an existing partitioned table's key. */
+  partitionKey: string | null;
+  /** Read-only: a partition's parent and bounds. */
+  partitionOf: string | null;
 }
 
 /** An index key: a column name, or an expression when it names no column. */
@@ -200,6 +276,45 @@ export const newForeignKey = (refSchema: string): ForeignKeyDesign => ({
 });
 
 export const newUnique = (): UniqueDesign => ({ originalName: null, name: "", columns: [], comment: null });
+
+export const newExclude = (): ExcludeDesign => ({
+  originalName: null,
+  name: "",
+  method: "gist",
+  elements: [],
+  predicate: null,
+  comment: null,
+});
+
+export const newTrigger = (): TriggerDesign => ({
+  originalName: null,
+  name: "",
+  timing: "before",
+  forEachRow: true,
+  onInsert: false,
+  onUpdate: false,
+  onDelete: false,
+  onTruncate: false,
+  updateColumns: [],
+  when: null,
+  functionSchema: "",
+  functionName: "",
+  arguments: "",
+  enabled: "origin",
+  comment: null,
+  definition: null,
+});
+
+export const newOptions = (): TableOptions => ({
+  owner: null,
+  tablespace: null,
+  unlogged: false,
+  fillFactor: null,
+  inherits: [],
+  partitionBy: null,
+  partitionKey: null,
+  partitionOf: null,
+});
 
 export const newCheck = (): CheckDesign => ({ originalName: null, name: "", expression: "", noInherit: false, comment: null });
 

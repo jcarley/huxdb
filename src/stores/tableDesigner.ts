@@ -3,21 +3,38 @@
 
 import { create } from "zustand";
 import * as api from "../lib/api";
-import { newCheck, newColumn, newForeignKey, newIndex, newUnique } from "../lib/types";
-import type { CheckDesign, ColumnDesign, ForeignKeyDesign, IndexDesign, TableDesign, UniqueDesign } from "../lib/types";
+import { newCheck, newColumn, newExclude, newForeignKey, newIndex, newOptions, newTrigger, newUnique } from "../lib/types";
+import type {
+  CheckDesign,
+  ColumnDesign,
+  ExcludeDesign,
+  ForeignKeyDesign,
+  IndexDesign,
+  TableDesign,
+  TableOptions,
+  TriggerDesign,
+  UniqueDesign,
+} from "../lib/types";
 import { invalidateCatalog } from "../lib/catalog";
 import { useExplorer } from "./explorer";
 import { useTabs } from "./tabs";
 import type { DesignerTab } from "./tabs";
 
 /** The designer tabs listing indexes and constraints, named after their `TableDesign` arrays. */
-export type ObjectKind = "indexes" | "foreignKeys" | "uniques" | "checks";
+export type ObjectKind = "indexes" | "foreignKeys" | "uniques" | "checks" | "excludes" | "triggers";
+
+export const OBJECT_KINDS: ObjectKind[] = ["indexes", "foreignKeys", "uniques", "checks", "excludes", "triggers"];
+
+/** Kinds whose names share one namespace (constraints and indexes); triggers have their own. */
+const CONSTRAINT_KINDS = ["indexes", "foreignKeys", "uniques", "checks", "excludes"] as const;
 
 export interface ObjectOf {
   indexes: IndexDesign;
   foreignKeys: ForeignKeyDesign;
   uniques: UniqueDesign;
   checks: CheckDesign;
+  excludes: ExcludeDesign;
+  triggers: TriggerDesign;
 }
 
 export interface Designer {
@@ -62,6 +79,7 @@ interface TableDesignerState {
   addObject: (id: string, kind: ObjectKind) => void;
   /** Deletes the selected row of a tab. */
   deleteObject: (id: string, kind: ObjectKind) => void;
+  setOptions: (id: string, patch: Partial<TableOptions>) => void;
   /** Saves after checking fields; a new table first asks for its name. */
   requestSave: (id: string) => void;
   setAskingName: (id: string, value: boolean) => void;
@@ -79,9 +97,19 @@ const emptyDesign = (tab: DesignerTab): TableDesign => ({
   foreignKeys: [],
   uniques: [],
   checks: [],
+  excludes: [],
+  triggers: [],
+  options: newOptions(),
 });
 
-const NO_SELECTION: Record<ObjectKind, number | null> = { indexes: null, foreignKeys: null, uniques: null, checks: null };
+const NO_SELECTION: Record<ObjectKind, number | null> = {
+  indexes: null,
+  foreignKeys: null,
+  uniques: null,
+  checks: null,
+  excludes: null,
+  triggers: null,
+};
 
 const newObject = (kind: ObjectKind, design: TableDesign): ObjectOf[ObjectKind] => {
   switch (kind) {
@@ -93,6 +121,10 @@ const newObject = (kind: ObjectKind, design: TableDesign): ObjectOf[ObjectKind] 
       return newUnique();
     case "checks":
       return newCheck();
+    case "excludes":
+      return newExclude();
+    case "triggers":
+      return newTrigger();
   }
 };
 
@@ -121,6 +153,17 @@ function updateReferences(design: TableDesign, from: string, to: string | null):
       }))
       .filter((x) => x.columns.length > 0),
     uniques: design.uniques.map((x) => ({ ...x, columns: rename(x.columns) })).filter((x) => x.columns.length > 0),
+    excludes: design.excludes
+      .map((x) => ({
+        ...x,
+        elements:
+          to === null
+            ? x.elements.filter((e) => e.column !== from)
+            : x.elements.map((e) => (e.column === from ? { ...e, column: to } : e)),
+      }))
+      .filter((x) => x.elements.length > 0),
+    // A trigger keeps firing (on any update) if its last UPDATE OF field goes.
+    triggers: design.triggers.map((t) => ({ ...t, updateColumns: rename(t.updateColumns) })),
     foreignKeys: design.foreignKeys
       .map((fk) => {
         if (to !== null) {
@@ -148,12 +191,16 @@ export function objectErrors(design: TableDesign, kind: ObjectKind, row: number)
   const x = design[kind][row] as ObjectOf[ObjectKind] | undefined;
   if (!x) return errors;
   const name = x.name.trim();
-  if (!name && x.originalName) errors.name = "An existing object needs a name.";
+  if (kind === "triggers") {
+    if (!name) errors.name = "Name is required.";
+    else if (design.triggers.some((o) => o !== x && o.name.trim() === name)) errors.name = "The name is used by another trigger.";
+  } else if (!name && x.originalName) errors.name = "An existing object needs a name.";
   else if (!name && x.comment?.trim()) errors.name = "A name is required to add a comment.";
   else if (name) {
-    const names = [design.primaryKeyName, ...(["indexes", "foreignKeys", "uniques", "checks"] as const).flatMap((k) =>
-      design[k].filter((o) => o !== x).map((o) => o.name.trim()),
-    )];
+    const names = [
+      design.primaryKeyName,
+      ...CONSTRAINT_KINDS.flatMap((k) => (design[k] as { name: string }[]).filter((o) => o !== x).map((o) => o.name.trim())),
+    ];
     if (names.includes(name)) errors.name = "The name is used by another index or constraint.";
   }
   const fields = new Set(design.columns.map((c) => c.name.trim()));
@@ -179,7 +226,35 @@ export function objectErrors(design: TableDesign, kind: ObjectKind, row: number)
     case "checks":
       if (!(x as CheckDesign).expression.trim()) errors.expression = "The expression is required.";
       break;
+    case "excludes": {
+      const e = x as ExcludeDesign;
+      if (e.elements.length === 0) errors.elements = "Choose at least one element.";
+      else if (e.elements.some((el) => !el.operator.trim())) errors.elements = "Every element needs an operator.";
+      break;
+    }
+    case "triggers": {
+      const t = x as TriggerDesign;
+      if (t.definition !== null) break; // read-only
+      if (!(t.onInsert || t.onUpdate || t.onDelete || t.onTruncate)) errors.events = "Choose at least one event.";
+      else if (t.onTruncate && t.forEachRow) errors.events = "TRUNCATE triggers must fire for each statement.";
+      if (t.onUpdate && missing(t.updateColumns)) errors.updateColumns = `There is no field "${missing(t.updateColumns)}".`;
+      if (!t.functionName) errors.function = "Choose the trigger function.";
+      break;
+    }
   }
+  return errors;
+}
+
+/** Errors on the Options tab, mirroring the backend's checks. */
+export function optionErrors(design: TableDesign): Record<string, string> {
+  const o = design.options;
+  const errors: Record<string, string> = {};
+  if (o.fillFactor !== null && (o.fillFactor < 10 || o.fillFactor > 100)) errors.fillFactor = "Fill factor must be between 10 and 100.";
+  if (o.partitionBy) {
+    if (o.partitionBy.keys.length === 0) errors.partitionBy = "Choose at least one partition key.";
+    else if (o.inherits.length > 0) errors.partitionBy = "A partitioned table can't inherit from other tables.";
+  }
+  if (o.inherits.some((q) => !q.schema || !q.name)) errors.inherits = "Choose a schema and table for each parent.";
   return errors;
 }
 
@@ -207,9 +282,8 @@ export function columnErrors(columns: ColumnDesign[], row: number): FieldErrors 
 
 const hasErrors = (design: TableDesign) =>
   design.columns.some((_, row) => Object.keys(columnErrors(design.columns, row)).length > 0) ||
-  (["indexes", "foreignKeys", "uniques", "checks"] as const).some((kind) =>
-    design[kind].some((_, row) => Object.keys(objectErrors(design, kind, row)).length > 0),
-  );
+  OBJECT_KINDS.some((kind) => design[kind].some((_, row) => Object.keys(objectErrors(design, kind, row)).length > 0)) ||
+  Object.keys(optionErrors(design)).length > 0;
 
 /** Whether a designer has edits that aren't saved. */
 export const designerDirty = (d: Designer | undefined) => !!d && JSON.stringify(d.edited) !== JSON.stringify(d.baseline);
@@ -347,6 +421,8 @@ export const useTableDesigner = create<TableDesignerState>((set, get) => {
       }),
 
     setComment: (id, comment) => patch(id, (d) => ({ edited: { ...d.edited, comment } })),
+
+    setOptions: (id, change) => patch(id, (d) => ({ edited: { ...d.edited, options: { ...d.edited.options, ...change } } })),
 
     selectObject: (id, kind, row) => patch(id, (d) => ({ selectedObjects: { ...d.selectedObjects, [kind]: row } })),
 

@@ -3,14 +3,15 @@ import type { ComponentType, FormEvent } from "react";
 import { ArrowDown, ArrowUp, KeyRound, ListPlus, Plus, RotateCw, Save, Trash2 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import * as api from "../../lib/api";
-import { columnErrors, objectErrors, useTableDesigner } from "../../stores/tableDesigner";
+import { columnErrors, objectErrors, optionErrors, useTableDesigner } from "../../stores/tableDesigner";
 import type { Designer, ObjectKind } from "../../stores/tableDesigner";
 import { Modal } from "../Modal";
 import { SqlEditor } from "../SqlEditor";
 import { FieldsGrid } from "./FieldsGrid";
-import { ChecksGrid, ForeignKeysGrid, IndexesGrid, UniquesGrid } from "./ObjectGrids";
+import { ChecksGrid, ExcludesGrid, ForeignKeysGrid, IndexesGrid, TriggersGrid, UniquesGrid } from "./ObjectGrids";
+import { OptionsForm } from "./OptionsForm";
 
-type DesignerTabName = "fields" | ObjectKind | "comment" | "sql";
+type DesignerTabName = "fields" | ObjectKind | "options" | "comment" | "sql";
 
 const SUB_TABS: { tab: DesignerTabName; label: string }[] = [
   { tab: "fields", label: "Fields" },
@@ -18,6 +19,9 @@ const SUB_TABS: { tab: DesignerTabName; label: string }[] = [
   { tab: "foreignKeys", label: "Foreign Keys" },
   { tab: "uniques", label: "Uniques" },
   { tab: "checks", label: "Checks" },
+  { tab: "excludes", label: "Excludes" },
+  { tab: "triggers", label: "Triggers" },
+  { tab: "options", label: "Options" },
   { tab: "comment", label: "Comment" },
   { tab: "sql", label: "SQL Preview" },
 ];
@@ -28,6 +32,8 @@ const OBJECT_NOUNS: Record<ObjectKind, string> = {
   foreignKeys: "Foreign Key",
   uniques: "Unique",
   checks: "Check",
+  excludes: "Exclude",
+  triggers: "Trigger",
 };
 
 const OBJECT_GRIDS: Record<ObjectKind, ComponentType<{ id: string }>> = {
@@ -35,6 +41,8 @@ const OBJECT_GRIDS: Record<ObjectKind, ComponentType<{ id: string }>> = {
   foreignKeys: ForeignKeysGrid,
   uniques: UniquesGrid,
   checks: ChecksGrid,
+  excludes: ExcludesGrid,
+  triggers: TriggersGrid,
 };
 
 const isObjectTab = (tab: DesignerTabName): tab is ObjectKind => tab in OBJECT_NOUNS;
@@ -45,6 +53,7 @@ function tabHasErrors(designer: Designer, tab: DesignerTabName): boolean {
   const { edited } = designer;
   if (tab === "fields") return edited.columns.some((_, row) => Object.keys(columnErrors(edited.columns, row)).length > 0);
   if (isObjectTab(tab)) return edited[tab].some((_, row) => Object.keys(objectErrors(edited, tab, row)).length > 0);
+  if (tab === "options") return Object.keys(optionErrors(edited)).length > 0;
   return false;
 }
 
@@ -137,6 +146,7 @@ export function TableDesigner({ id }: { id: string }) {
 
       {subTab === "fields" && <FieldsGrid id={id} designer={designer} />}
       {ObjectGrid && <ObjectGrid id={id} />}
+      {subTab === "options" && <OptionsForm id={id} />}
       {subTab === "comment" && (
         <textarea
           className="textarea m-3 min-h-40 w-auto max-w-2xl"

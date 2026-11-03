@@ -4,8 +4,9 @@
 use sqlx::PgPool;
 
 use super::model::{
-    CheckDesign, ColumnDesign, ForeignKeyAction, ForeignKeyDesign, Identity, IndexColumn, IndexDesign, TableDesign,
-    UniqueDesign,
+    CheckDesign, ColumnDesign, ExcludeDesign, ExcludeElement, ForeignKeyAction, ForeignKeyDesign, Identity,
+    IndexColumn, IndexDesign, PartitionStrategy, QualifiedName, TableDesign, TableOptions, TriggerDesign,
+    TriggerEnabled, TriggerTiming, UniqueDesign,
 };
 
 fn err(e: sqlx::Error) -> String {
@@ -111,7 +112,242 @@ pub async fn load_table_design(pool: &PgPool, schema: &str, table: &str) -> Resu
         foreign_keys,
         uniques,
         checks,
+        excludes: load_excludes(pool, schema, table).await?,
+        triggers: load_triggers(pool, schema, table).await?,
+        options: load_options(pool, schema, table).await?,
     })
+}
+
+/// Columns of the excludes query: name, method, keys, operators, predicate, comment.
+type ExcludeRow = (String, String, Vec<String>, Vec<String>, Option<String>, Option<String>);
+
+/// Exclusion constraints. Element expressions show as 0 in `conkey`, so keys
+/// come from the backing index, like `load_indexes`' keys.
+async fn load_excludes(pool: &PgPool, schema: &str, table: &str) -> Result<Vec<ExcludeDesign>, String> {
+    let rows: Vec<ExcludeRow> = sqlx::query_as(
+        "SELECT con.conname::text,
+                am.amname::text,
+                ARRAY(SELECT CASE WHEN k.attnum = 0 THEN pg_get_indexdef(x.indexrelid, k.ord::int, true)
+                                  ELSE a.attname::text END
+                      FROM unnest(x.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord)
+                      LEFT JOIN pg_attribute a ON a.attrelid = x.indrelid AND a.attnum = k.attnum
+                      ORDER BY k.ord),
+                ARRAY(SELECT o.oprname::text
+                      FROM unnest(con.conexclop) WITH ORDINALITY AS e(op, ord)
+                      JOIN pg_operator o ON o.oid = e.op
+                      ORDER BY e.ord),
+                pg_get_expr(x.indpred, x.indrelid),
+                obj_description(con.oid, 'pg_constraint')
+         FROM pg_constraint con
+         JOIN pg_index x ON x.indexrelid = con.conindid
+         JOIN pg_class i ON i.oid = x.indexrelid
+         JOIN pg_am am ON am.oid = i.relam
+         JOIN pg_class c ON c.oid = con.conrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = $1 AND c.relname = $2 AND con.contype = 'x'
+         ORDER BY con.conname",
+    )
+    .bind(schema)
+    .bind(table)
+    .fetch_all(pool)
+    .await
+    .map_err(err)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(name, method, keys, operators, predicate, comment)| ExcludeDesign {
+            original_name: Some(name.clone()),
+            name,
+            method,
+            elements: keys
+                .into_iter()
+                .zip(operators)
+                .map(|(column, operator)| ExcludeElement { column, operator })
+                .collect(),
+            predicate,
+            comment,
+        })
+        .collect())
+}
+
+/// Columns of the triggers query: name, type bits, enabled, function schema
+/// and name, arguments, UPDATE OF columns, definition, read-only, comment.
+type TriggerRow = (String, i32, String, String, String, Vec<u8>, Vec<String>, String, bool, Option<String>);
+
+/// `pg_trigger.tgtype` bits (src/include/catalog/pg_trigger.h).
+const TRIGGER_ROW: i32 = 1;
+const TRIGGER_BEFORE: i32 = 2;
+const TRIGGER_INSERT: i32 = 4;
+const TRIGGER_DELETE: i32 = 8;
+const TRIGGER_UPDATE: i32 = 16;
+const TRIGGER_TRUNCATE: i32 = 32;
+
+/// The WHEN condition of a `pg_get_triggerdef` result, without its outer
+/// parentheses. (`tgqual` can't be deparsed with `pg_get_expr`.)
+fn trigger_when(definition: &str) -> Option<String> {
+    let end = definition.rfind(" EXECUTE FUNCTION ")?;
+    let start = definition[..end].find(" FOR EACH ")?;
+    let when = definition[start..end].find(" WHEN ")? + start + " WHEN ".len();
+    let condition = definition[when..end].trim();
+    let inner = condition.strip_prefix('(').and_then(|c| c.strip_suffix(')')).unwrap_or(condition);
+    Some(inner.to_string())
+}
+
+/// `tgargs` (each argument NUL-terminated) as a list of SQL literals.
+fn trigger_arguments(raw: &[u8]) -> String {
+    let mut args: Vec<_> = raw.split(|&b| b == 0).map(|a| quote_literal(&String::from_utf8_lossy(a))).collect();
+    args.pop(); // the empty piece after the final NUL
+    args.join(", ")
+}
+
+/// User triggers; PostgreSQL's internal foreign key triggers are skipped.
+/// Constraint triggers and triggers with transition tables are read-only.
+async fn load_triggers(pool: &PgPool, schema: &str, table: &str) -> Result<Vec<TriggerDesign>, String> {
+    let rows: Vec<TriggerRow> = sqlx::query_as(
+        "SELECT t.tgname::text,
+                t.tgtype::int4,
+                t.tgenabled::text,
+                pn.nspname::text,
+                p.proname::text,
+                t.tgargs,
+                ARRAY(SELECT a.attname::text
+                      FROM unnest(t.tgattr::int2[]) WITH ORDINALITY AS k(attnum, ord)
+                      JOIN pg_attribute a ON a.attrelid = t.tgrelid AND a.attnum = k.attnum
+                      ORDER BY k.ord),
+                pg_get_triggerdef(t.oid, true),
+                t.tgconstraint <> 0 OR t.tgoldtable IS NOT NULL OR t.tgnewtable IS NOT NULL,
+                obj_description(t.oid, 'pg_trigger')
+         FROM pg_trigger t
+         JOIN pg_class c ON c.oid = t.tgrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         JOIN pg_proc p ON p.oid = t.tgfoid
+         JOIN pg_namespace pn ON pn.oid = p.pronamespace
+         WHERE n.nspname = $1 AND c.relname = $2 AND NOT t.tgisinternal
+         ORDER BY t.tgname",
+    )
+    .bind(schema)
+    .bind(table)
+    .fetch_all(pool)
+    .await
+    .map_err(err)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(name, bits, enabled, function_schema, function_name, args, update_columns, definition, read_only, comment)| {
+            let has = |bit: i32| bits & bit != 0;
+            TriggerDesign {
+                original_name: Some(name.clone()),
+                name,
+                timing: if has(TRIGGER_BEFORE) { TriggerTiming::Before } else { TriggerTiming::After },
+                for_each_row: has(TRIGGER_ROW),
+                on_insert: has(TRIGGER_INSERT),
+                on_update: has(TRIGGER_UPDATE),
+                on_delete: has(TRIGGER_DELETE),
+                on_truncate: has(TRIGGER_TRUNCATE),
+                update_columns,
+                when: trigger_when(&definition),
+                function_schema,
+                function_name,
+                arguments: trigger_arguments(&args),
+                enabled: match enabled.as_str() {
+                    "D" => TriggerEnabled::Disabled,
+                    "R" => TriggerEnabled::Replica,
+                    "A" => TriggerEnabled::Always,
+                    _ => TriggerEnabled::Origin,
+                },
+                comment,
+                definition: read_only.then_some(definition),
+            }
+        })
+        .collect())
+}
+
+/// Columns of the options query: owner, tablespace, unlogged, fill factor,
+/// partition key, partition parent and bounds.
+type OptionsRow = (String, Option<String>, bool, Option<String>, Option<String>, Option<String>);
+
+async fn load_options(pool: &PgPool, schema: &str, table: &str) -> Result<TableOptions, String> {
+    let (owner, tablespace, unlogged, fill_factor, partition_key, partition_of): OptionsRow = sqlx::query_as(
+        "SELECT pg_get_userbyid(c.relowner)::text,
+                ts.spcname::text,
+                c.relpersistence = 'u',
+                (SELECT option_value FROM pg_options_to_table(c.reloptions) WHERE option_name = 'fillfactor'),
+                CASE WHEN c.relkind = 'p' THEN pg_get_partkeydef(c.oid) END,
+                CASE WHEN c.relispartition THEN
+                  (SELECT format('%I.%I ', pn.nspname, pc.relname)
+                   FROM pg_inherits i
+                   JOIN pg_class pc ON pc.oid = i.inhparent
+                   JOIN pg_namespace pn ON pn.oid = pc.relnamespace
+                   WHERE i.inhrelid = c.oid) || pg_get_expr(c.relpartbound, c.oid)
+                END
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         LEFT JOIN pg_tablespace ts ON ts.oid = c.reltablespace
+         WHERE n.nspname = $1 AND c.relname = $2",
+    )
+    .bind(schema)
+    .bind(table)
+    .fetch_one(pool)
+    .await
+    .map_err(err)?;
+
+    // A partition's parent is its partitioned table, not an inheritance parent.
+    let inherits: Vec<(String, String)> = sqlx::query_as(
+        "SELECT pn.nspname::text, pc.relname::text
+         FROM pg_inherits i
+         JOIN pg_class c ON c.oid = i.inhrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         JOIN pg_class pc ON pc.oid = i.inhparent
+         JOIN pg_namespace pn ON pn.oid = pc.relnamespace
+         WHERE n.nspname = $1 AND c.relname = $2 AND NOT c.relispartition
+         ORDER BY i.inhseqno",
+    )
+    .bind(schema)
+    .bind(table)
+    .fetch_all(pool)
+    .await
+    .map_err(err)?;
+
+    Ok(TableOptions {
+        owner: Some(owner),
+        tablespace,
+        unlogged,
+        fill_factor: fill_factor.and_then(|f| f.parse().ok()),
+        inherits: inherits.into_iter().map(|(schema, name)| QualifiedName { schema, name }).collect(),
+        partition_by: None,
+        partition_key,
+        partition_of,
+    })
+}
+
+/// Role names for the Owner option, without PostgreSQL's predefined `pg_*` roles.
+pub async fn list_roles(pool: &PgPool) -> Result<Vec<String>, String> {
+    sqlx::query_scalar("SELECT rolname::text FROM pg_roles WHERE rolname !~ '^pg_' ORDER BY 1")
+        .fetch_all(pool)
+        .await
+        .map_err(err)
+}
+
+pub async fn list_tablespaces(pool: &PgPool) -> Result<Vec<String>, String> {
+    sqlx::query_scalar("SELECT spcname::text FROM pg_tablespace ORDER BY 1")
+        .fetch_all(pool)
+        .await
+        .map_err(err)
+}
+
+/// Functions returning `trigger`, as `(schema, name)`, outside the system schemas.
+pub async fn list_trigger_functions(pool: &PgPool) -> Result<Vec<QualifiedName>, String> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT n.nspname::text, p.proname::text
+         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+         WHERE p.prorettype = 'trigger'::regtype
+           AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+         ORDER BY 1, 2",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(err)?;
+    Ok(rows.into_iter().map(|(schema, name)| QualifiedName { schema, name }).collect())
 }
 
 /// Columns of the constraints query: name, type, columns, referenced schema,
@@ -427,6 +663,7 @@ fn comment_sql(target: &str, comment: &Option<String>) -> String {
 enum ObjectKind {
     Unique,
     Check,
+    Exclude,
     Index,
     ForeignKey,
 }
@@ -456,14 +693,7 @@ fn column_list(names: &[String], map: ColumnMap) -> Option<String> {
 fn index_keys(columns: &[IndexColumn], map: ColumnMap) -> Option<String> {
     let keys: Option<Vec<_>> = columns
         .iter()
-        .map(|c| {
-            let key = match map(&c.column) {
-                None => format!("({})", c.column),
-                Some(None) => return None,
-                Some(Some(name)) => quote_ident(&name),
-            };
-            Some(if c.descending { format!("{key} DESC") } else { key })
-        })
+        .map(|c| key_sql(&c.column, map).map(|key| if c.descending { format!("{key} DESC") } else { key }))
         .collect();
     keys.map(|k| k.join(", "))
 }
@@ -476,6 +706,26 @@ fn action_sql(action: ForeignKeyAction) -> &'static str {
         ForeignKeyAction::SetNull => "SET NULL",
         ForeignKeyAction::SetDefault => "SET DEFAULT",
     }
+}
+
+/// A key of an index, exclusion constraint or partition key: a quoted column,
+/// or a parenthesized expression. `None` if it is a dropped column.
+fn key_sql(key: &str, map: ColumnMap) -> Option<String> {
+    match map(key) {
+        None => Some(format!("({key})")),
+        Some(None) => None,
+        Some(Some(name)) => Some(quote_ident(&name)),
+    }
+}
+
+fn exclude_body(x: &ExcludeDesign, map: ColumnMap) -> Option<String> {
+    let elements: Option<Vec<_>> = x
+        .elements
+        .iter()
+        .map(|ExcludeElement { column, operator }| Some(format!("{} WITH {operator}", key_sql(column, map)?)))
+        .collect();
+    let predicate = x.predicate.as_ref().map(|p| format!(" WHERE ({p})")).unwrap_or_default();
+    Some(format!("EXCLUDE USING {} ({}){predicate}", x.method, elements?.join(", ")))
 }
 
 fn index_body(x: &IndexDesign, table: &str, map: ColumnMap) -> Option<String> {
@@ -531,6 +781,9 @@ fn table_objects<'a>(design: &'a TableDesign, table: &str, map: ColumnMap) -> Ve
     for x in &design.checks {
         objects.push(object(ObjectKind::Check, &x.original_name, &x.name, &x.comment, "", Some(check_body(x))));
     }
+    for x in &design.excludes {
+        objects.push(object(ObjectKind::Exclude, &x.original_name, &x.name, &x.comment, "", exclude_body(x, map)));
+    }
     for x in &design.indexes {
         let head = if x.unique { "CREATE UNIQUE INDEX" } else { "CREATE INDEX" };
         objects.push(object(ObjectKind::Index, &x.original_name, &x.name, &x.comment, head, index_body(x, table, map)));
@@ -567,6 +820,133 @@ fn object_comment(o: &TableObject, schema: &str, table: &str) -> String {
     comment_sql(&target, o.comment)
 }
 
+// Triggers ------------------------------------------------------------------
+
+/// Everything after `CREATE TRIGGER "name"`, or `None` if it uses a dropped
+/// column. A read-only trigger's definition stands for itself.
+fn trigger_body(t: &TriggerDesign, table: &str, map: ColumnMap) -> Option<String> {
+    if let Some(definition) = &t.definition {
+        return Some(definition.clone());
+    }
+    let mut events = Vec::new();
+    if t.on_insert {
+        events.push("INSERT".to_string());
+    }
+    if t.on_update {
+        events.push(match t.update_columns.as_slice() {
+            [] => "UPDATE".to_string(),
+            columns => format!("UPDATE OF {}", column_list(columns, map)?),
+        });
+    }
+    if t.on_delete {
+        events.push("DELETE".to_string());
+    }
+    if t.on_truncate {
+        events.push("TRUNCATE".to_string());
+    }
+    let timing = match t.timing {
+        TriggerTiming::Before => "BEFORE",
+        TriggerTiming::After => "AFTER",
+    };
+    let level = if t.for_each_row { "ROW" } else { "STATEMENT" };
+    let when = t.when.as_ref().map(|w| format!(" WHEN ({w})")).unwrap_or_default();
+    Some(format!(
+        "{timing} {} ON {table} FOR EACH {level}{when} EXECUTE FUNCTION {}({})",
+        events.join(" OR "),
+        qualified(&t.function_schema, &t.function_name),
+        t.arguments
+    ))
+}
+
+/// `ALTER TABLE … ENABLE/DISABLE … TRIGGER` to put a trigger in `state`.
+fn trigger_enabled_sql(table: &str, name: &str, state: TriggerEnabled) -> String {
+    let action = match state {
+        TriggerEnabled::Origin => "ENABLE",
+        TriggerEnabled::Disabled => "DISABLE",
+        TriggerEnabled::Replica => "ENABLE REPLICA",
+        TriggerEnabled::Always => "ENABLE ALWAYS",
+    };
+    format!("ALTER TABLE {table} {action} TRIGGER {}", quote_ident(name))
+}
+
+fn trigger_comment(table: &str, t: &TriggerDesign) -> String {
+    comment_sql(&format!("TRIGGER {} ON {table}", quote_ident(&t.name)), &t.comment)
+}
+
+/// CREATE TRIGGER plus the enabled state and comment a fresh trigger lacks.
+fn create_trigger(t: &TriggerDesign, body: &str, table: &str) -> Vec<String> {
+    let mut statements = vec![format!("CREATE TRIGGER {} {body}", quote_ident(&t.name))];
+    if t.enabled != TriggerEnabled::Origin {
+        statements.push(trigger_enabled_sql(table, &t.name, t.enabled));
+    }
+    if t.comment.is_some() {
+        statements.push(trigger_comment(table, t));
+    }
+    statements
+}
+
+// Table options ---------------------------------------------------------------
+
+/// Put before statements that rewrite the table, so SQL Preview warns about them.
+const REWRITE_WARNING: &str = "-- Rewrites the whole table and locks it while it runs.\n";
+
+fn qualified_name(q: &QualifiedName) -> String {
+    qualified(&q.schema, &q.name)
+}
+
+/// The clauses after CREATE TABLE's column list: INHERITS, PARTITION BY, WITH, TABLESPACE.
+fn create_table_suffix(o: &TableOptions, map: ColumnMap) -> String {
+    let mut sql = String::new();
+    if !o.inherits.is_empty() {
+        let parents: Vec<_> = o.inherits.iter().map(qualified_name).collect();
+        sql += &format!(" INHERITS ({})", parents.join(", "));
+    }
+    if let Some(p) = &o.partition_by {
+        let strategy = match p.strategy {
+            PartitionStrategy::Range => "RANGE",
+            PartitionStrategy::List => "LIST",
+            PartitionStrategy::Hash => "HASH",
+        };
+        let keys: Vec<_> = p.keys.iter().filter_map(|k| key_sql(k, map)).collect();
+        sql += &format!(" PARTITION BY {strategy} ({})", keys.join(", "));
+    }
+    if let Some(f) = o.fill_factor {
+        sql += &format!(" WITH (fillfactor = {f})");
+    }
+    if let Some(ts) = &o.tablespace {
+        sql += &format!(" TABLESPACE {}", quote_ident(ts));
+    }
+    sql
+}
+
+/// Option changes that go after the column and constraint changes.
+fn alter_options(table: &str, old: &TableOptions, new: &TableOptions) -> Vec<String> {
+    let alter = |action: String| format!("ALTER TABLE {table} {action}");
+    let mut statements = Vec::new();
+    if old.fill_factor != new.fill_factor {
+        statements.push(alter(match new.fill_factor {
+            Some(f) => format!("SET (fillfactor = {f})"),
+            None => "RESET (fillfactor)".into(),
+        }));
+    }
+    if old.unlogged != new.unlogged {
+        let to = if new.unlogged { "UNLOGGED" } else { "LOGGED" };
+        statements.push(format!("{REWRITE_WARNING}{}", alter(format!("SET {to}"))));
+    }
+    if old.tablespace != new.tablespace {
+        // Back to the default: pg_default is the default tablespace unless the
+        // database was created with another one.
+        let ts = new.tablespace.as_deref().map_or("pg_default".to_string(), quote_ident);
+        statements.push(format!("{REWRITE_WARNING}{}", alter(format!("SET TABLESPACE {ts}"))));
+    }
+    if let Some(owner) = &new.owner
+        && old.owner.as_ref() != Some(owner)
+    {
+        statements.push(alter(format!("OWNER TO {}", quote_ident(owner))));
+    }
+    statements
+}
+
 /// The statements that turn `original` into `edited`, one change per statement,
 /// in an order PostgreSQL accepts. With no original, the statements create the
 /// table. Both designs must be normalized. Renaming the table isn't supported
@@ -589,9 +969,20 @@ fn create_table(design: &TableDesign) -> Vec<String> {
     for o in objects.iter().filter(|o| o.kind != ObjectKind::Index) {
         lines.push(format!("{}{}", constraint_prefix(o.name), o.body.as_deref().unwrap_or_default()));
     }
-    let mut statements = vec![format!("CREATE TABLE {table} (\n  {}\n)", lines.join(",\n  "))];
+    let options = &design.options;
+    let unlogged = if options.unlogged { "UNLOGGED " } else { "" };
+    let suffix = create_table_suffix(options, &map);
+    let mut statements = vec![format!("CREATE {unlogged}TABLE {table} (\n  {}\n){suffix}", lines.join(",\n  "))];
+    if let Some(owner) = &options.owner {
+        statements.push(format!("ALTER TABLE {table} OWNER TO {}", quote_ident(owner)));
+    }
     for o in objects.iter().filter(|o| o.kind == ObjectKind::Index) {
         statements.push(create_object(o, &table));
+    }
+    for t in &design.triggers {
+        if let Some(body) = trigger_body(t, &table, &map) {
+            statements.extend(create_trigger(t, &body, &table));
+        }
     }
 
     if design.comment.is_some() {
@@ -640,8 +1031,28 @@ fn alter_table(original: &TableDesign, edited: &TableDesign) -> Vec<String> {
             .filter(|o| unchanged(o, n))
     };
 
-    // 0. Drop indexes and constraints that were removed or changed, before
-    //    the columns they use change.
+    // Triggers likewise: kept when their definition is unchanged.
+    let old_triggers: Vec<_> = original.triggers.iter().map(|t| (t, trigger_body(t, &table, &renamed))).collect();
+    let trigger_predecessor = |t: &TriggerDesign| {
+        let body = trigger_body(t, &table, &current);
+        old_triggers
+            .iter()
+            .find(|(o, old_body)| t.original_name.as_deref() == Some(o.name.as_str()) && old_body.is_some() && *old_body == body)
+            .map(|(o, _)| *o)
+    };
+    let kept_trigger = |o: &TriggerDesign| edited.triggers.iter().any(|t| trigger_predecessor(t).is_some_and(|p| p.name == o.name));
+
+    // 0. Drop triggers, indexes and constraints that were removed or changed,
+    //    before the columns they use change, and detach removed parents so
+    //    their inherited columns can be dropped.
+    for (o, _) in &old_triggers {
+        if !kept_trigger(o) {
+            statements.push(format!("DROP TRIGGER {} ON {table}", quote_ident(&o.name)));
+        }
+    }
+    for parent in original.options.inherits.iter().filter(|p| !edited.options.inherits.contains(p)) {
+        statements.push(alter(format!("NO INHERIT {}", qualified_name(parent))));
+    }
     for o in old_objects.iter().rev() {
         if successor(o).is_some_and(|n| unchanged(o, n)) {
             continue;
@@ -710,6 +1121,11 @@ fn alter_table(original: &TableDesign, edited: &TableDesign) -> Vec<String> {
         statements.push(alter(format!("ADD COLUMN {}", column_definition(e))));
     }
 
+    // 5b. Attach new parents, now that the columns they need exist.
+    for parent in edited.options.inherits.iter().filter(|p| !original.options.inherits.contains(p)) {
+        statements.push(alter(format!("INHERIT {}", qualified_name(parent))));
+    }
+
     // 6. Re-create the primary key.
     if key_changed && let Some(clause) = primary_key_clause(edited) {
         statements.push(alter(format!("ADD {clause}")));
@@ -730,6 +1146,35 @@ fn alter_table(original: &TableDesign, edited: &TableDesign) -> Vec<String> {
             None => statements.push(create_object(n, &table)),
         }
     }
+
+    // 6c. Triggers last: rename and re-enable kept ones, create the rest.
+    for t in &edited.triggers {
+        match trigger_predecessor(t) {
+            Some(o) => {
+                if o.name != t.name {
+                    statements.push(format!(
+                        "ALTER TRIGGER {} ON {table} RENAME TO {}",
+                        quote_ident(&o.name),
+                        quote_ident(&t.name)
+                    ));
+                }
+                if o.enabled != t.enabled {
+                    statements.push(trigger_enabled_sql(&table, &t.name, t.enabled));
+                }
+                if o.comment != t.comment {
+                    statements.push(trigger_comment(&table, t));
+                }
+            }
+            None => {
+                if let Some(body) = trigger_body(t, &table, &current) {
+                    statements.extend(create_trigger(t, &body, &table));
+                }
+            }
+        }
+    }
+
+    // 6d. Storage and ownership options.
+    statements.extend(alter_options(&table, &original.options, &edited.options));
 
     // 7. Comments.
     if original.comment != edited.comment {
@@ -755,6 +1200,7 @@ fn alter_table(original: &TableDesign, edited: &TableDesign) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::designer::model::PartitionDesign;
 
     fn col(name: &str, data_type: &str) -> ColumnDesign {
         ColumnDesign {
@@ -1360,6 +1806,400 @@ mod tests {
         assert_eq!(check_def, "CHECK ((price > (0)::numeric)) NO INHERIT");
         assert_eq!(groups_fk_rows, 2);
         assert!(generate_table_ddl(Some(&altered), &altered.normalized()).is_empty());
+    }
+
+    fn trigger(name: &str) -> TriggerDesign {
+        TriggerDesign {
+            original_name: Some(name.into()),
+            name: name.into(),
+            timing: TriggerTiming::Before,
+            for_each_row: true,
+            on_update: true,
+            update_columns: vec!["price".into()],
+            when: Some("old.price IS DISTINCT FROM new.price".into()),
+            function_schema: "public".into(),
+            function_name: "audit".into(),
+            arguments: "'items', 42".into(),
+            ..Default::default()
+        }
+    }
+
+    /// `with_objects()` plus an exclude, a trigger and storage options.
+    fn with_phase3() -> TableDesign {
+        let mut t = with_objects();
+        t.excludes = vec![ExcludeDesign {
+            original_name: Some("items_no_overlap".into()),
+            name: "items_no_overlap".into(),
+            method: "gist".into(),
+            elements: vec![
+                ExcludeElement { column: "name".into(), operator: "=".into() },
+                ExcludeElement { column: "int4range(id, parent_id)".into(), operator: "&&".into() },
+            ],
+            ..Default::default()
+        }];
+        t.triggers = vec![trigger("items_audit")];
+        t.options = TableOptions {
+            owner: Some("app".into()),
+            fill_factor: Some(90),
+            inherits: vec![QualifiedName { schema: "public".into(), name: "base".into() }],
+            ..Default::default()
+        };
+        t
+    }
+
+    fn diff_phase3(edit: impl FnOnce(&mut TableDesign)) -> Vec<String> {
+        let original = with_phase3();
+        let mut edited = original.clone();
+        edit(&mut edited);
+        generate_table_ddl(Some(&original), &edited.normalized())
+    }
+
+    const AUDIT: &str = "CREATE TRIGGER \"items_audit\" BEFORE UPDATE OF \"price\" ON \"public\".\"items\" FOR EACH ROW WHEN (old.price IS DISTINCT FROM new.price) EXECUTE FUNCTION \"public\".\"audit\"('items', 42)";
+
+    #[test]
+    fn creates_excludes_triggers_and_options() {
+        let mut design = with_phase3();
+        design.primary_key_name = None;
+        design.uniques.clear();
+        design.checks.clear();
+        design.foreign_keys.clear();
+        design.indexes.clear();
+        design.options = TableOptions {
+            owner: Some("app".into()),
+            unlogged: true,
+            fill_factor: Some(70),
+            tablespace: Some("fast".into()),
+            partition_by: Some(PartitionDesign { strategy: PartitionStrategy::Range, keys: vec!["price".into(), "lower(name)".into()] }),
+            ..Default::default()
+        };
+        design.triggers[0].enabled = TriggerEnabled::Disabled;
+        design.triggers[0].comment = Some("audit prices".into());
+        let statements = generate_table_ddl(None, &design.normalized());
+        assert!(statements[0].starts_with("CREATE UNLOGGED TABLE \"public\".\"items\" ("), "{}", statements[0]);
+        assert!(statements[0].contains(",\n  CONSTRAINT \"items_no_overlap\" EXCLUDE USING gist (\"name\" WITH =, (int4range(id, parent_id)) WITH &&)\n)"));
+        assert!(statements[0].ends_with(") PARTITION BY RANGE (\"price\", (lower(name))) WITH (fillfactor = 70) TABLESPACE \"fast\""));
+        assert_eq!(
+            statements[1..],
+            [
+                "ALTER TABLE \"public\".\"items\" OWNER TO \"app\"".to_string(),
+                AUDIT.to_string(),
+                "ALTER TABLE \"public\".\"items\" DISABLE TRIGGER \"items_audit\"".to_string(),
+                "COMMENT ON TRIGGER \"items_audit\" ON \"public\".\"items\" IS 'audit prices'".to_string(),
+            ]
+        );
+
+        let inherited = TableDesign {
+            options: TableOptions { inherits: vec![QualifiedName { schema: "public".into(), name: "base".into() }], ..Default::default() },
+            ..table(vec![new_col("id", "int")])
+        };
+        assert!(generate_table_ddl(None, &inherited)[0].ends_with(") INHERITS (\"public\".\"base\")"));
+    }
+
+    #[test]
+    fn unchanged_triggers_and_excludes_survive_renames() {
+        assert!(diff_phase3(|_| {}).is_empty());
+        let statements = diff_phase3(|t| {
+            t.columns[1].name = "title".into();
+            t.columns[2].name = "cost".into();
+            // The UI rewrites references to renamed fields.
+            t.indexes[0].columns[0].column = "title".into();
+            t.uniques[0].columns[0] = "title".into();
+            t.excludes[0].elements[0].column = "title".into();
+            t.triggers[0].update_columns[0] = "cost".into();
+        });
+        assert_eq!(
+            statements,
+            [format!("{T} RENAME COLUMN \"name\" TO \"title\""), format!("{T} RENAME COLUMN \"price\" TO \"cost\"")]
+        );
+    }
+
+    #[test]
+    fn changed_triggers_are_dropped_first_and_recreated_last() {
+        let statements = diff_phase3(|t| {
+            t.triggers[0].timing = TriggerTiming::After;
+            t.triggers[0].enabled = TriggerEnabled::Always;
+            t.triggers[0].comment = Some("now after".into());
+            t.excludes[0].elements[1].operator = "-|-".into();
+            t.columns.remove(3); // parent_id: the UI drops it from the FK
+            t.foreign_keys.clear();
+            t.excludes[0].elements.truncate(1);
+        });
+        assert_eq!(
+            statements,
+            [
+                "DROP TRIGGER \"items_audit\" ON \"public\".\"items\"".to_string(),
+                format!("{T} DROP CONSTRAINT \"items_parent_fkey\""),
+                format!("{T} DROP CONSTRAINT \"items_no_overlap\""),
+                format!("{T} DROP COLUMN \"parent_id\""),
+                format!("{T} ADD CONSTRAINT \"items_no_overlap\" EXCLUDE USING gist (\"name\" WITH =)"),
+                AUDIT.replace("BEFORE", "AFTER"),
+                format!("{T} ENABLE ALWAYS TRIGGER \"items_audit\""),
+                "COMMENT ON TRIGGER \"items_audit\" ON \"public\".\"items\" IS 'now after'".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn kept_triggers_are_renamed_and_toggled() {
+        assert_eq!(
+            diff_phase3(|t| {
+                t.triggers[0].name = "items_price_audit".into();
+                t.triggers[0].enabled = TriggerEnabled::Disabled;
+                t.excludes[0].name = "items_exclusive".into();
+            }),
+            [
+                format!("{T} RENAME CONSTRAINT \"items_no_overlap\" TO \"items_exclusive\""),
+                "ALTER TRIGGER \"items_audit\" ON \"public\".\"items\" RENAME TO \"items_price_audit\"".to_string(),
+                format!("{T} DISABLE TRIGGER \"items_price_audit\""),
+            ]
+        );
+    }
+
+    #[test]
+    fn read_only_triggers_are_never_recreated() {
+        let mut original = with_phase3();
+        original.triggers[0].definition = Some("CONSTRAINT TRIGGER …".into());
+        let mut edited = original.clone();
+        edited.triggers[0].timing = TriggerTiming::After; // ignored: the definition stands
+        edited.triggers[0].enabled = TriggerEnabled::Disabled;
+        assert_eq!(generate_table_ddl(Some(&original), &edited.normalized()), [format!("{T} DISABLE TRIGGER \"items_audit\"")]);
+        edited.triggers.clear();
+        assert_eq!(generate_table_ddl(Some(&original), &edited.normalized()), ["DROP TRIGGER \"items_audit\" ON \"public\".\"items\""]);
+    }
+
+    #[test]
+    fn alters_options_in_order() {
+        let statements = diff_phase3(|t| {
+            t.columns.remove(2); // price, inherited from base in this story
+            t.indexes.remove(1);
+            t.checks.clear();
+            t.triggers.clear();
+            t.columns.push(new_col("region", "text"));
+            t.options.inherits = vec![QualifiedName { schema: "sales".into(), name: "regional".into() }];
+            t.options.fill_factor = None;
+            t.options.unlogged = true;
+            t.options.tablespace = Some("fast".into());
+            t.options.owner = Some("reporting".into());
+        });
+        assert_eq!(
+            statements,
+            [
+                "DROP TRIGGER \"items_audit\" ON \"public\".\"items\"".to_string(),
+                format!("{T} NO INHERIT \"public\".\"base\""),
+                "DROP INDEX \"public\".\"items_lower_idx\"".to_string(),
+                format!("{T} DROP CONSTRAINT \"items_price_check\""),
+                format!("{T} DROP COLUMN \"price\""),
+                format!("{T} ADD COLUMN \"region\" text"),
+                format!("{T} INHERIT \"sales\".\"regional\""),
+                format!("{T} RESET (fillfactor)"),
+                format!("{REWRITE_WARNING}{T} SET UNLOGGED"),
+                format!("{REWRITE_WARNING}{T} SET TABLESPACE \"fast\""),
+                format!("{T} OWNER TO \"reporting\""),
+            ]
+        );
+        assert_eq!(diff_phase3(|t| t.options.fill_factor = Some(80)), [format!("{T} SET (fillfactor = 80)")]);
+        assert_eq!(diff_phase3(|t| t.options.owner = None), Vec::<String>::new(), "a blank owner changes nothing");
+    }
+
+    #[test]
+    fn parses_trigger_catalog_values() {
+        assert_eq!(
+            trigger_when("CREATE TRIGGER t BEFORE UPDATE ON s.t FOR EACH ROW WHEN ((old.a IS DISTINCT FROM new.a)) EXECUTE FUNCTION f()"),
+            Some("(old.a IS DISTINCT FROM new.a)".into())
+        );
+        assert_eq!(trigger_when("CREATE TRIGGER t AFTER INSERT ON s.t FOR EACH STATEMENT EXECUTE FUNCTION f()"), None);
+        assert_eq!(trigger_arguments(b"audit\0it's\0"), "'audit', 'it''s'");
+        assert_eq!(trigger_arguments(b""), "");
+    }
+
+    #[test]
+    fn validation_checks_phase3() {
+        let ok = with_phase3().normalized();
+        assert_eq!(ok.validate(), Ok(()));
+        type Edit = Box<dyn Fn(&mut TableDesign)>;
+        let cases: Vec<Edit> = vec![
+            Box::new(|t| t.excludes[0].elements.clear()),
+            Box::new(|t| t.excludes[0].elements[0].operator = "".into()),
+            Box::new(|t| t.excludes[0].name = "items_name_key".into()),
+            Box::new(|t| t.triggers[0].name = "".into()),
+            Box::new(|t| t.triggers.push(trigger("items_audit"))),
+            Box::new(|t| t.triggers[0].on_update = false),
+            Box::new(|t| {
+                t.triggers[0].on_truncate = true;
+            }),
+            Box::new(|t| t.triggers[0].update_columns = vec!["nope".into()]),
+            Box::new(|t| t.triggers[0].function_name = "".into()),
+            Box::new(|t| t.options.fill_factor = Some(5)),
+            Box::new(|t| t.options.partition_by = Some(PartitionDesign::default())),
+            Box::new(|t| t.options.partition_by = Some(PartitionDesign { keys: vec!["id".into()], ..Default::default() })),
+        ];
+        for (i, edit) in cases.iter().enumerate() {
+            let mut t = ok.clone();
+            edit(&mut t);
+            assert!(t.normalized().validate().is_err(), "case {i}");
+        }
+    }
+
+    /// Needs a live server; see `connections::postgres::tests::connects_to_live_server`.
+    #[tokio::test]
+    #[ignore]
+    async fn round_trips_triggers_and_options_on_live_server() {
+        let port: u16 = std::env::var("HUXDB_TEST_PG_PORT").unwrap().parse().unwrap();
+        let config = crate::connections::model::ConnectionConfig {
+            id: "live".into(),
+            port,
+            ..crate::connections::model::sample("live")
+        };
+        let sessions = crate::explorer::sessions::SessionManager::default();
+        let pool = sessions.pool(&config, "postgres");
+        let schema = "huxdb_triggers_test";
+        sqlx::raw_sql(
+            "DROP SCHEMA IF EXISTS huxdb_triggers_test CASCADE;
+             CREATE SCHEMA huxdb_triggers_test;
+             CREATE TABLE huxdb_triggers_test.base (note text);
+             CREATE FUNCTION huxdb_triggers_test.audit() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END';",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let functions = list_trigger_functions(&pool).await.unwrap();
+        assert!(functions.contains(&QualifiedName { schema: schema.into(), name: "audit".into() }));
+        assert!(list_roles(&pool).await.unwrap().contains(&"postgres".to_string()));
+        assert!(list_tablespaces(&pool).await.unwrap().contains(&"pg_default".to_string()));
+
+        let audit = |name: &str| TriggerDesign {
+            name: name.into(),
+            function_schema: schema.into(),
+            function_name: "audit".into(),
+            ..Default::default()
+        };
+        let created = TableDesign {
+            schema: schema.into(),
+            name: "bookings".into(),
+            columns: vec![
+                ColumnDesign { key_order: Some(1), ..new_col("id", "integer") },
+                new_col("room", "integer"),
+                new_col("during", "int4range"),
+            ],
+            excludes: vec![ExcludeDesign {
+                name: "bookings_no_overlap".into(),
+                elements: vec![ExcludeElement { column: "during".into(), operator: "&&".into() }],
+                predicate: Some("room > 0".into()),
+                comment: Some("one booking at a time".into()),
+                ..Default::default()
+            }],
+            triggers: vec![
+                TriggerDesign {
+                    for_each_row: true,
+                    on_update: true,
+                    update_columns: vec!["room".into()],
+                    when: Some("old.room IS DISTINCT FROM new.room".into()),
+                    arguments: "'bookings', 42".into(),
+                    comment: Some("room moves".into()),
+                    ..audit("bookings_audit")
+                },
+                TriggerDesign {
+                    timing: TriggerTiming::After,
+                    on_truncate: true,
+                    on_insert: true,
+                    enabled: TriggerEnabled::Disabled,
+                    ..audit("bookings_truncate")
+                },
+            ],
+            options: TableOptions {
+                fill_factor: Some(80),
+                inherits: vec![QualifiedName { schema: schema.into(), name: "base".into() }],
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .normalized();
+        let loaded = save_table_design(&pool, None, &created).await.unwrap();
+
+        let names: Vec<_> = loaded.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["note", "id", "room", "during"], "the inherited column comes first");
+        let x = &loaded.excludes[0];
+        assert_eq!((x.method.as_str(), x.elements.as_slice()), ("gist", [ExcludeElement { column: "during".into(), operator: "&&".into() }].as_slice()));
+        assert_eq!(x.predicate.as_deref(), Some("(room > 0)"));
+        assert_eq!(x.comment.as_deref(), Some("one booking at a time"));
+        let t = &loaded.triggers[0];
+        assert_eq!((t.timing, t.for_each_row, t.on_update, t.on_insert), (TriggerTiming::Before, true, true, false));
+        assert_eq!(t.update_columns, ["room"]);
+        assert_eq!(t.when.as_deref(), Some("old.room IS DISTINCT FROM new.room"));
+        assert_eq!(t.arguments, "'bookings', '42'", "arguments are stored as strings");
+        assert_eq!(t.comment.as_deref(), Some("room moves"));
+        assert_eq!(t.definition, None);
+        let t = &loaded.triggers[1];
+        assert_eq!((t.timing, t.for_each_row, t.on_insert, t.on_truncate), (TriggerTiming::After, false, true, true));
+        assert_eq!(t.enabled, TriggerEnabled::Disabled);
+        let o = &loaded.options;
+        assert_eq!((o.owner.as_deref(), o.tablespace.as_deref(), o.unlogged, o.fill_factor), (Some("postgres"), None, false, Some(80)));
+        assert_eq!(o.inherits, [QualifiedName { schema: schema.into(), name: "base".into() }]);
+        assert!(generate_table_ddl(Some(&loaded), &loaded.normalized()).is_empty(), "a loaded design round-trips");
+
+        // Rename a field the trigger and exclude use, rename the exclude,
+        // re-enable a trigger, change storage options, drop the parent.
+        let mut edited = loaded.clone();
+        edited.columns[2].name = "room_no".into();
+        edited.triggers[0].update_columns[0] = "room_no".into();
+        edited.excludes[0].name = "bookings_exclusive".into();
+        edited.triggers[1].enabled = TriggerEnabled::Origin;
+        edited.options.fill_factor = Some(60);
+        edited.options.inherits.clear();
+        let statements = generate_table_ddl(Some(&loaded), &edited.normalized());
+        assert_eq!(statements.len(), 5, "{statements:#?}");
+        let altered = save_table_design(&pool, Some(&loaded), &edited.normalized()).await.unwrap();
+        assert_eq!(altered.triggers[0].update_columns, ["room_no"]);
+        assert_eq!(altered.triggers[0].when.as_deref(), Some("old.room_no IS DISTINCT FROM new.room_no"));
+        assert_eq!(altered.triggers[1].enabled, TriggerEnabled::Origin);
+        assert_eq!(altered.excludes[0].name, "bookings_exclusive");
+        assert_eq!(altered.options.fill_factor, Some(60));
+        assert!(altered.options.inherits.is_empty());
+        assert!(generate_table_ddl(Some(&altered), &altered.normalized()).is_empty());
+
+        // A constraint trigger loads read-only and can still be disabled.
+        sqlx::raw_sql(
+            "CREATE CONSTRAINT TRIGGER bookings_check AFTER INSERT ON huxdb_triggers_test.bookings
+             DEFERRABLE FOR EACH ROW EXECUTE FUNCTION huxdb_triggers_test.audit()",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let with_constraint = load_table_design(&pool, schema, "bookings").await.unwrap();
+        let check = with_constraint.triggers.iter().find(|t| t.name == "bookings_check").unwrap();
+        assert!(check.definition.as_deref().unwrap().starts_with("CREATE CONSTRAINT TRIGGER"));
+        let mut disabled = with_constraint.clone();
+        disabled.triggers.iter_mut().find(|t| t.name == "bookings_check").unwrap().enabled = TriggerEnabled::Disabled;
+        let after = save_table_design(&pool, Some(&with_constraint), &disabled.normalized()).await.unwrap();
+        let check = after.triggers.iter().find(|t| t.name == "bookings_check").unwrap();
+        assert_eq!(check.enabled, TriggerEnabled::Disabled);
+
+        // A partitioned table and one of its partitions.
+        let events = TableDesign {
+            schema: schema.into(),
+            name: "events".into(),
+            columns: vec![new_col("at", "timestamp with time zone"), new_col("kind", "text")],
+            options: TableOptions {
+                partition_by: Some(PartitionDesign { strategy: PartitionStrategy::Range, keys: vec!["at".into()] }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let events = save_table_design(&pool, None, &events.normalized()).await.unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE huxdb_triggers_test.events_2026 PARTITION OF huxdb_triggers_test.events
+             FOR VALUES FROM ('2026-01-01') TO ('2027-01-01')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let partition = load_table_design(&pool, schema, "events_2026").await.unwrap();
+        sqlx::raw_sql("DROP SCHEMA huxdb_triggers_test CASCADE").execute(&pool).await.unwrap();
+
+        assert_eq!(events.options.partition_key.as_deref(), Some("RANGE (at)"));
+        let of = partition.options.partition_of.unwrap();
+        assert!(of.starts_with("huxdb_triggers_test.events FOR VALUES FROM"), "{of}");
+        assert!(partition.options.inherits.is_empty());
     }
 
     #[test]

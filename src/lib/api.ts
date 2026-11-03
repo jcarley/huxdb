@@ -3,7 +3,7 @@
 // Commands reject with a plain error string.
 
 import { invoke } from "@tauri-apps/api/core";
-import type { ConnectionConfig, SchemaObjects, TableDesign, TableInfo, ViewInfo } from "./types";
+import type { ConnectionConfig, QualifiedName, SchemaObjects, TableDesign, TableInfo, ViewInfo } from "./types";
 
 export const listConnections = () => invoke<ConnectionConfig[]>("list_connections");
 
@@ -44,6 +44,16 @@ export const loadTableDesign = (connectionId: string, database: string, schema: 
 /** Column names of a table, for a foreign key's referenced fields. */
 export const listTableColumns = (connectionId: string, database: string, schema: string, table: string) =>
   invoke<string[]>("list_table_columns", { connectionId, database, schema, table });
+
+export const listRoles = (connectionId: string, database: string) =>
+  invoke<string[]>("list_roles", { connectionId, database });
+
+export const listTablespaces = (connectionId: string, database: string) =>
+  invoke<string[]>("list_tablespaces", { connectionId, database });
+
+/** Functions that return `trigger`, outside the system schemas. */
+export const listTriggerFunctions = (connectionId: string, database: string) =>
+  invoke<QualifiedName[]>("list_trigger_functions", { connectionId, database });
 
 /** The statements Save would run; rejects with a validation error. */
 export const previewTableDdl = (original: TableDesign | null, edited: TableDesign) =>

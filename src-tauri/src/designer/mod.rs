@@ -38,6 +38,42 @@ pub async fn list_table_columns(
     postgres::list_columns(&pool, &schema, &table).await
 }
 
+/// Roles, for the Owner option.
+#[tauri::command]
+pub async fn list_roles(
+    store: State<'_, ConnectionStore>,
+    sessions: State<'_, SessionManager>,
+    connection_id: String,
+    database: String,
+) -> Result<Vec<String>, String> {
+    let pool = pool_for(&store, &sessions, &connection_id, Some(&database))?;
+    postgres::list_roles(&pool).await
+}
+
+/// Tablespaces, for the Tablespace option.
+#[tauri::command]
+pub async fn list_tablespaces(
+    store: State<'_, ConnectionStore>,
+    sessions: State<'_, SessionManager>,
+    connection_id: String,
+    database: String,
+) -> Result<Vec<String>, String> {
+    let pool = pool_for(&store, &sessions, &connection_id, Some(&database))?;
+    postgres::list_tablespaces(&pool).await
+}
+
+/// Functions a trigger can call (they return `trigger`).
+#[tauri::command]
+pub async fn list_trigger_functions(
+    store: State<'_, ConnectionStore>,
+    sessions: State<'_, SessionManager>,
+    connection_id: String,
+    database: String,
+) -> Result<Vec<model::QualifiedName>, String> {
+    let pool = pool_for(&store, &sessions, &connection_id, Some(&database))?;
+    postgres::list_trigger_functions(&pool).await
+}
+
 /// Normalizes and validates both designs; the original is only normalized,
 /// since it came from the server.
 fn prepare(original: Option<TableDesign>, edited: TableDesign) -> Result<(Option<TableDesign>, TableDesign), String> {

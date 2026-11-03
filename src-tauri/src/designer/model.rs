@@ -54,6 +54,124 @@ pub struct TableDesign {
     pub uniques: Vec<UniqueDesign>,
     #[serde(default)]
     pub checks: Vec<CheckDesign>,
+    #[serde(default)]
+    pub excludes: Vec<ExcludeDesign>,
+    #[serde(default)]
+    pub triggers: Vec<TriggerDesign>,
+    #[serde(default)]
+    pub options: TableOptions,
+}
+
+/// One element of an exclusion constraint: a column (or an expression when it
+/// names no column) compared with an operator, e.g. `during WITH &&`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExcludeElement {
+    pub column: String,
+    pub operator: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExcludeDesign {
+    pub original_name: Option<String>,
+    pub name: String,
+    /// Index access method, usually gist.
+    pub method: String,
+    pub elements: Vec<ExcludeElement>,
+    pub predicate: Option<String>,
+    pub comment: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TriggerTiming {
+    #[default]
+    Before,
+    After,
+}
+
+/// When a trigger fires, by `session_replication_role` (`pg_trigger.tgenabled`).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TriggerEnabled {
+    /// Enabled (fires in origin and local modes).
+    #[default]
+    Origin,
+    Disabled,
+    Replica,
+    Always,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TriggerDesign {
+    pub original_name: Option<String>,
+    pub name: String,
+    pub timing: TriggerTiming,
+    /// FOR EACH ROW; otherwise FOR EACH STATEMENT.
+    pub for_each_row: bool,
+    pub on_insert: bool,
+    pub on_update: bool,
+    pub on_delete: bool,
+    pub on_truncate: bool,
+    /// UPDATE OF these columns only; empty means any column.
+    pub update_columns: Vec<String>,
+    /// WHEN condition, without the parentheses.
+    pub when: Option<String>,
+    pub function_schema: String,
+    pub function_name: String,
+    /// Arguments as SQL literals, e.g. `'audit', 42`.
+    pub arguments: String,
+    pub enabled: TriggerEnabled,
+    pub comment: Option<String>,
+    /// Full definition of a trigger the designer can't edit (constraint
+    /// triggers, transition tables). Such a trigger is only kept, renamed,
+    /// enabled or disabled, commented or dropped.
+    pub definition: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct QualifiedName {
+    pub schema: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PartitionStrategy {
+    #[default]
+    Range,
+    List,
+    Hash,
+}
+
+/// PARTITION BY for a new table; keys are columns or expressions.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PartitionDesign {
+    pub strategy: PartitionStrategy,
+    pub keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TableOptions {
+    /// `None` on a new table means the current user.
+    pub owner: Option<String>,
+    /// `None` means the database's default tablespace.
+    pub tablespace: Option<String>,
+    pub unlogged: bool,
+    pub fill_factor: Option<i32>,
+    /// Parent tables, in inheritance order.
+    pub inherits: Vec<QualifiedName>,
+    /// Only used when creating a table: the key can't change afterwards.
+    pub partition_by: Option<PartitionDesign>,
+    /// Read-only: an existing partitioned table's key, e.g. `RANGE (created)`.
+    pub partition_key: Option<String>,
+    /// Read-only: for a partition, its parent and bounds.
+    pub partition_of: Option<String>,
 }
 
 /// One key of an index: a column name, or an expression when it names no column.
@@ -201,6 +319,60 @@ impl UniqueDesign {
     }
 }
 
+impl ExcludeDesign {
+    fn normalized(&self) -> Self {
+        Self {
+            name: self.name.trim().to_string(),
+            method: match self.method.trim() {
+                "" => "gist".to_string(),
+                m => m.to_lowercase(),
+            },
+            elements: self
+                .elements
+                .iter()
+                .map(|e| ExcludeElement { column: e.column.trim().to_string(), operator: e.operator.trim().to_string() })
+                .filter(|e| !e.column.is_empty())
+                .collect(),
+            predicate: clean(&self.predicate),
+            comment: clean(&self.comment),
+            ..self.clone()
+        }
+    }
+}
+
+impl TriggerDesign {
+    fn normalized(&self) -> Self {
+        Self {
+            name: self.name.trim().to_string(),
+            // UPDATE OF only means something with the Update event.
+            update_columns: if self.on_update { clean_list(&self.update_columns) } else { Vec::new() },
+            when: clean(&self.when),
+            function_schema: self.function_schema.trim().to_string(),
+            function_name: self.function_name.trim().to_string(),
+            arguments: self.arguments.trim().to_string(),
+            comment: clean(&self.comment),
+            ..self.clone()
+        }
+    }
+}
+
+impl TableOptions {
+    fn normalized(&self) -> Self {
+        Self {
+            owner: clean(&self.owner),
+            tablespace: clean(&self.tablespace),
+            inherits: self
+                .inherits
+                .iter()
+                .map(|q| QualifiedName { schema: q.schema.trim().to_string(), name: q.name.trim().to_string() })
+                .filter(|q| !q.name.is_empty())
+                .collect(),
+            partition_by: self.partition_by.as_ref().map(|p| PartitionDesign { keys: clean_list(&p.keys), ..p.clone() }),
+            ..self.clone()
+        }
+    }
+}
+
 impl CheckDesign {
     fn normalized(&self) -> Self {
         Self {
@@ -242,6 +414,9 @@ impl TableDesign {
             foreign_keys: self.foreign_keys.iter().map(ForeignKeyDesign::normalized).collect(),
             uniques: self.uniques.iter().map(UniqueDesign::normalized).collect(),
             checks: self.checks.iter().map(CheckDesign::normalized).collect(),
+            excludes: self.excludes.iter().map(ExcludeDesign::normalized).collect(),
+            triggers: self.triggers.iter().map(TriggerDesign::normalized).collect(),
+            options: self.options.normalized(),
         }
     }
 
@@ -327,13 +502,27 @@ impl TableDesign {
             }
         }
 
+        for (i, x) in self.excludes.iter().enumerate() {
+            let label = label("Exclude", i, &x.name);
+            check_name(&label, &x.original_name, &x.name, &x.comment)?;
+            if x.elements.is_empty() {
+                return Err(format!("{label}: choose at least one element."));
+            }
+            if let Some(e) = x.elements.iter().find(|e| e.operator.is_empty()) {
+                return Err(format!("{label}: element \"{}\" needs an operator.", e.column));
+            }
+        }
+        self.validate_triggers(columns)?;
+        self.validate_options()?;
+
         let named = self
             .indexes
             .iter()
             .map(|x| ("Index", &x.name))
             .chain(self.foreign_keys.iter().map(|x| ("Foreign key", &x.name)))
             .chain(self.uniques.iter().map(|x| ("Unique", &x.name)))
-            .chain(self.checks.iter().map(|x| ("Check", &x.name)));
+            .chain(self.checks.iter().map(|x| ("Check", &x.name)))
+            .chain(self.excludes.iter().map(|x| ("Exclude", &x.name)));
         // Constraint and index names must be distinct: unique constraints and
         // indexes even share the schema's relation namespace.
         let mut taken: HashSet<&str> = self.primary_key_name.iter().map(String::as_str).collect();
@@ -341,6 +530,54 @@ impl TableDesign {
             if !name.is_empty() && !taken.insert(name) {
                 return Err(format!("{kind} \"{name}\": the name is used by another index or constraint."));
             }
+        }
+        Ok(())
+    }
+
+    fn validate_triggers(&self, columns: &HashSet<&str>) -> Result<(), String> {
+        let mut names = HashSet::new();
+        for (i, t) in self.triggers.iter().enumerate() {
+            let label = label("Trigger", i, &t.name);
+            if t.name.is_empty() {
+                return Err(format!("{label}: name is required."));
+            }
+            if !names.insert(t.name.as_str()) {
+                return Err(format!("{label}: the name is used by another trigger."));
+            }
+            if t.definition.is_some() {
+                continue; // read-only: its definition isn't edited
+            }
+            if !(t.on_insert || t.on_update || t.on_delete || t.on_truncate) {
+                return Err(format!("{label}: choose at least one event."));
+            }
+            if t.on_truncate && t.for_each_row {
+                return Err(format!("{label}: TRUNCATE triggers must fire for each statement."));
+            }
+            if let Some(c) = t.update_columns.iter().find(|c| !columns.contains(c.as_str())) {
+                return Err(format!("{label}: there is no field \"{c}\"."));
+            }
+            if t.function_schema.is_empty() || t.function_name.is_empty() {
+                return Err(format!("{label}: choose the trigger function."));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_options(&self) -> Result<(), String> {
+        let o = &self.options;
+        if o.fill_factor.is_some_and(|f| !(10..=100).contains(&f)) {
+            return Err("Options: fill factor must be between 10 and 100.".into());
+        }
+        if let Some(p) = &o.partition_by {
+            if p.keys.is_empty() {
+                return Err("Options: choose at least one partition key.".into());
+            }
+            if !o.inherits.is_empty() {
+                return Err("Options: a partitioned table can't inherit from other tables.".into());
+            }
+        }
+        if o.inherits.iter().any(|q| q.schema.is_empty()) {
+            return Err("Options: choose a schema for each inherited table.".into());
         }
         Ok(())
     }

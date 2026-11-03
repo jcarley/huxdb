@@ -1,14 +1,26 @@
 import { useContext, useState } from "react";
 import type { ReactNode } from "react";
 import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
-import { Ellipsis } from "lucide-react";
-import { useColumns, useSchemas, useTables } from "../../lib/catalog";
+import { Ellipsis, Lock } from "lucide-react";
+import { useColumns, useSchemas, useTables, useTriggerFunctions } from "../../lib/catalog";
 import type { Lookup } from "../../lib/catalog";
-import { FOREIGN_KEY_ACTIONS, INDEX_METHODS } from "../../lib/types";
-import type { CheckDesign, ForeignKeyAction, ForeignKeyDesign, IndexColumn, IndexDesign, UniqueDesign } from "../../lib/types";
+import { FOREIGN_KEY_ACTIONS, INDEX_METHODS, TRIGGER_ENABLED } from "../../lib/types";
+import type {
+  CheckDesign,
+  ExcludeDesign,
+  ForeignKeyAction,
+  ForeignKeyDesign,
+  IndexColumn,
+  IndexDesign,
+  TriggerDesign,
+  TriggerEnabled,
+  TriggerTiming,
+  UniqueDesign,
+} from "../../lib/types";
 import { objectErrors, useTableDesigner } from "../../stores/tableDesigner";
 import type { ObjectKind, ObjectOf } from "../../stores/tableDesigner";
 import { ColumnPickerDialog } from "./ColumnPickerDialog";
+import type { PickedKey } from "./ColumnPickerDialog";
 import { DesignerId } from "./context";
 
 // ---------------------------------------------------------------------------
@@ -25,7 +37,9 @@ function useObject<K extends ObjectKind>(kind: K, row: number, field?: string) {
     return d?.showErrors && field ? objectErrors(d.edited, kind, row)[field] : undefined;
   });
   const update = (patch: Partial<ObjectOf[K]>) => useTableDesigner.getState().updateObject(id, kind, row, patch);
-  return { id, value, error, update };
+  // Constraint triggers and triggers with transition tables can't be edited.
+  const readOnly = kind === "triggers" && (value as TriggerDesign | undefined)?.definition != null;
+  return { id, value, error, update, readOnly };
 }
 
 /** The table being designed: its tab's location and its fields as edited. */
@@ -42,53 +56,62 @@ const cellInput = "input input-xs w-full rounded-none border-transparent bg-tran
 const cellSelect = "select select-xs w-full rounded-none border-transparent bg-transparent focus:border-primary";
 
 function NameCell({ kind, row }: { kind: ObjectKind; row: number }) {
-  const { value, error, update } = useObject(kind, row, "name");
+  const { value, error, update, readOnly } = useObject(kind, row, "name");
   if (!value) return null;
+  const definition = readOnly ? (value as TriggerDesign).definition! : undefined;
   return (
-    <input
+    <div className="flex items-center">
+      {readOnly && <Lock className="ml-1.5 size-3 shrink-0 text-base-content/50" aria-label="Read-only definition" />}
+      <input
       className={`${cellInput} ${error ? "input-error" : ""}`}
       value={value.name}
-      title={error}
-      placeholder={value.originalName ? "" : "(automatic)"}
+      title={error ?? definition}
+      // Constraints and indexes may be left for PostgreSQL to name; triggers can't.
+      placeholder={value.originalName || kind === "triggers" ? "" : "(automatic)"}
       spellCheck={false}
       autoCapitalize="off"
       autoCorrect="off"
       onChange={(e) => update({ name: e.target.value })}
-    />
+      />
+    </div>
   );
 }
 
 /** Free text; for nullable fields, blank is stored as null. */
-function TextCell<K extends ObjectKind>({ kind, row, field, mono, placeholder }: { kind: K; row: number; field: "comment" | "predicate" | "expression"; mono?: boolean; placeholder?: string }) {
-  const { value, error, update } = useObject(kind, row, field);
+function TextCell<K extends ObjectKind>({ kind, row, field, mono, placeholder }: { kind: K; row: number; field: "comment" | "predicate" | "expression" | "when" | "arguments"; mono?: boolean; placeholder?: string }) {
+  const { value, error, update, readOnly } = useObject(kind, row, field);
   if (!value) return null;
   const text = (value as unknown as Record<string, string | null>)[field] ?? "";
+  const required = field === "expression" || field === "arguments";
   return (
     <input
       className={`${cellInput} ${mono ? "font-mono" : ""} ${error ? "input-error" : ""}`}
       value={text}
+      disabled={readOnly && field !== "comment"}
       title={error ?? (text || undefined)}
       placeholder={placeholder}
       spellCheck={false}
       autoCapitalize="off"
       autoCorrect="off"
       onChange={(e) =>
-        update({ [field]: field === "expression" ? e.target.value : e.target.value || null } as Partial<ObjectOf[K]>)
+        update({ [field]: required ? e.target.value : e.target.value || null } as Partial<ObjectOf[K]>)
       }
     />
   );
 }
 
-function CheckboxCell<K extends "indexes" | "checks">({ kind, row, field }: { kind: K; row: number; field: K extends "indexes" ? "unique" : "noInherit" }) {
-  const { value, update } = useObject(kind, row);
+/** A boolean field. `errorField` names the error it shows (e.g. the trigger's events). */
+function CheckboxCell<K extends ObjectKind>({ kind, row, field, errorField }: { kind: K; row: number; field: string; errorField?: string }) {
+  const { value, error, update, readOnly } = useObject(kind, row, errorField);
   if (!value) return null;
   const checked = (value as unknown as Record<string, boolean>)[field];
   return (
-    <div className="flex justify-center">
+    <div className="flex justify-center" title={error}>
       <input
         type="checkbox"
-        className="checkbox checkbox-xs"
+        className={`checkbox checkbox-xs ${error ? "checkbox-error" : ""}`}
         checked={checked}
+        disabled={readOnly}
         onChange={(e) => update({ [field]: e.target.checked } as Partial<ObjectOf[K]>)}
       />
     </div>
@@ -125,7 +148,7 @@ function IndexFieldsCell({ row }: { row: number }) {
           value={value.columns}
           withOrder
           withExpressions
-          onSave={(columns) => update({ columns })}
+          onSave={(keys) => update({ columns: keys.map((k) => ({ column: k.column, descending: !!k.descending })) })}
           onClose={() => setOpen(false)}
         />
       )}
@@ -247,8 +270,8 @@ function ActionCell({ row, field }: { row: number; field: "onUpdate" | "onDelete
   );
 }
 
-function MethodCell({ row }: { row: number }) {
-  const { value, update } = useObject("indexes", row);
+function MethodCell({ kind, row }: { kind: "indexes" | "excludes"; row: number }) {
+  const { value, update } = useObject(kind, row);
   if (!value) return null;
   const methods = INDEX_METHODS.includes(value.method) ? INDEX_METHODS : [value.method, ...INDEX_METHODS];
   return (
@@ -256,6 +279,118 @@ function MethodCell({ row }: { row: number }) {
       {methods.map((m) => (
         <option key={m} value={m}>
           {m}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function ExcludeElementsCell({ row }: { row: number }) {
+  const { value, error, update } = useObject("excludes", row, "elements");
+  const { fields } = useDesign();
+  const [open, setOpen] = useState(false);
+  if (!value) return null;
+  const text = value.elements.map((e) => `${e.column} WITH ${e.operator}`).join(", ");
+  return (
+    <PickerCell text={text} error={error} title="Choose elements" open={() => setOpen(true)}>
+      {open && (
+        <ColumnPickerDialog
+          title="Exclude Elements"
+          available={fields}
+          value={value.elements}
+          withOperator
+          withExpressions
+          onSave={(keys: PickedKey[]) => update({ elements: keys.map((k) => ({ column: k.column, operator: k.operator ?? "" })) })}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </PickerCell>
+  );
+}
+
+function TimingCell({ row }: { row: number }) {
+  const { value, update, readOnly } = useObject("triggers", row);
+  if (!value) return null;
+  return (
+    <select className={cellSelect} value={value.timing} disabled={readOnly} onChange={(e) => update({ timing: e.target.value as TriggerTiming })}>
+      <option value="before">BEFORE</option>
+      <option value="after">AFTER</option>
+    </select>
+  );
+}
+
+function UpdateOfCell({ row }: { row: number }) {
+  const { value, error, update, readOnly } = useObject("triggers", row, "updateColumns");
+  const { fields } = useDesign();
+  const [open, setOpen] = useState(false);
+  if (!value) return null;
+  return (
+    <PickerCell
+      text={value.onUpdate ? value.updateColumns.join(", ") : ""}
+      error={error}
+      title="Choose the fields whose update fires the trigger"
+      disabled={readOnly || !value.onUpdate}
+      open={() => setOpen(true)}
+    >
+      {open && (
+        <ColumnPickerDialog
+          title="Update Of Fields"
+          available={fields}
+          value={asKeys(value.updateColumns)}
+          onSave={(keys) => update({ updateColumns: keys.map((k) => k.column) })}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </PickerCell>
+  );
+}
+
+const SEP = "\u001f";
+
+function TriggerFunctionCell({ row }: { row: number }) {
+  const { value, error, update, readOnly } = useObject("triggers", row, "function");
+  const { tab } = useDesign();
+  const functions = useTriggerFunctions(tab.connectionId, tab.database);
+  if (!value) return null;
+  const current = value.functionName ? `${value.functionSchema}${SEP}${value.functionName}` : "";
+  const options = functions.status === "loaded" ? functions.names.map((f) => `${f.schema}${SEP}${f.name}`) : [];
+  if (current && !options.includes(current)) options.unshift(current);
+  return (
+    <select
+      className={`${cellSelect} ${error ? "select-error" : ""}`}
+      value={current}
+      disabled={readOnly}
+      title={error ?? (functions.status === "error" ? functions.error : undefined)}
+      onChange={(e) => {
+        const [functionSchema = "", functionName = ""] = e.target.value.split(SEP);
+        update({ functionSchema, functionName });
+      }}
+    >
+      <option value="">{functions.status === "loading" ? "Loading…" : ""}</option>
+      {options.map((o) => (
+        <option key={o} value={o}>
+          {o.replace(SEP, ".")}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+const ENABLED_LABELS: Record<TriggerEnabled, string> = {
+  origin: "Enabled",
+  disabled: "Disabled",
+  replica: "Replica",
+  always: "Always",
+};
+
+function EnabledCell({ row }: { row: number }) {
+  const { value, update } = useObject("triggers", row);
+  if (!value) return null;
+  return (
+    <select className={cellSelect} value={value.enabled} onChange={(e) => update({ enabled: e.target.value as TriggerEnabled })}>
+      {TRIGGER_ENABLED.map((state) => (
+        <option key={state} value={state}>
+          {ENABLED_LABELS[state]}
         </option>
       ))}
     </select>
@@ -272,7 +407,7 @@ const indexHelper = createColumnHelper<typeof features, IndexDesign>();
 const INDEX_COLUMNS = indexHelper.columns([
   indexHelper.display({ id: "name", header: "Name", cell: (c) => <NameCell kind="indexes" row={c.row.index} /> }),
   indexHelper.display({ id: "columns", header: "Fields", cell: (c) => <IndexFieldsCell row={c.row.index} /> }),
-  indexHelper.display({ id: "method", header: "Index Method", cell: (c) => <MethodCell row={c.row.index} /> }),
+  indexHelper.display({ id: "method", header: "Index Method", cell: (c) => <MethodCell kind="indexes" row={c.row.index} /> }),
   indexHelper.display({ id: "unique", header: "Unique", cell: (c) => <CheckboxCell kind="indexes" row={c.row.index} field="unique" /> }),
   indexHelper.display({
     id: "predicate",
@@ -313,6 +448,51 @@ const CHECK_COLUMNS = checkHelper.columns([
   checkHelper.display({ id: "comment", header: "Comment", cell: (c) => <TextCell kind="checks" row={c.row.index} field="comment" /> }),
 ]);
 
+const excludeHelper = createColumnHelper<typeof features, ExcludeDesign>();
+const EXCLUDE_COLUMNS = excludeHelper.columns([
+  excludeHelper.display({ id: "name", header: "Name", cell: (c) => <NameCell kind="excludes" row={c.row.index} /> }),
+  excludeHelper.display({ id: "elements", header: "Elements", cell: (c) => <ExcludeElementsCell row={c.row.index} /> }),
+  excludeHelper.display({ id: "method", header: "Index Method", cell: (c) => <MethodCell kind="excludes" row={c.row.index} /> }),
+  excludeHelper.display({
+    id: "predicate",
+    header: "Where",
+    cell: (c) => <TextCell kind="excludes" row={c.row.index} field="predicate" mono placeholder="(all rows)" />,
+  }),
+  excludeHelper.display({ id: "comment", header: "Comment", cell: (c) => <TextCell kind="excludes" row={c.row.index} field="comment" /> }),
+]);
+
+const triggerHelper = createColumnHelper<typeof features, TriggerDesign>();
+const event = (field: "onInsert" | "onUpdate" | "onDelete" | "onTruncate", header: string) =>
+  triggerHelper.display({
+    // Not the field name: the foreign key grid's onUpdate / onDelete ids are taken.
+    id: `event${header}`,
+    header,
+    cell: (c) => <CheckboxCell kind="triggers" row={c.row.index} field={field} errorField="events" />,
+  });
+const TRIGGER_COLUMNS = triggerHelper.columns([
+  triggerHelper.display({ id: "name", header: "Name", cell: (c) => <NameCell kind="triggers" row={c.row.index} /> }),
+  triggerHelper.display({ id: "forEachRow", header: "Row", cell: (c) => <CheckboxCell kind="triggers" row={c.row.index} field="forEachRow" errorField="events" /> }),
+  triggerHelper.display({ id: "timing", header: "Fires", cell: (c) => <TimingCell row={c.row.index} /> }),
+  event("onInsert", "Insert"),
+  event("onUpdate", "Update"),
+  event("onDelete", "Delete"),
+  event("onTruncate", "Truncate"),
+  triggerHelper.display({ id: "updateColumns", header: "Update Of", cell: (c) => <UpdateOfCell row={c.row.index} /> }),
+  triggerHelper.display({
+    id: "when",
+    header: "When",
+    cell: (c) => <TextCell kind="triggers" row={c.row.index} field="when" mono placeholder="e.g. new.price <> old.price" />,
+  }),
+  triggerHelper.display({ id: "function", header: "Function", cell: (c) => <TriggerFunctionCell row={c.row.index} /> }),
+  triggerHelper.display({
+    id: "arguments",
+    header: "Arguments",
+    cell: (c) => <TextCell kind="triggers" row={c.row.index} field="arguments" mono placeholder="'a', 42" />,
+  }),
+  triggerHelper.display({ id: "enabled", header: "Enabled", cell: (c) => <EnabledCell row={c.row.index} /> }),
+  triggerHelper.display({ id: "comment", header: "Comment", cell: (c) => <TextCell kind="triggers" row={c.row.index} field="comment" /> }),
+]);
+
 /** Column widths in px, by column id. */
 const WIDTHS: Record<string, number> = {
   name: 200,
@@ -328,9 +508,21 @@ const WIDTHS: Record<string, number> = {
   onUpdate: 120,
   expression: 320,
   noInherit: 80,
+  elements: 260,
+  forEachRow: 50,
+  timing: 90,
+  eventInsert: 55,
+  eventUpdate: 60,
+  eventDelete: 55,
+  eventTruncate: 70,
+  updateColumns: 150,
+  when: 220,
+  function: 200,
+  arguments: 130,
+  enabled: 100,
 };
 
-const CENTERED = new Set(["unique", "noInherit"]);
+const CENTERED = new Set(["unique", "noInherit", "forEachRow", "eventInsert", "eventUpdate", "eventDelete", "eventTruncate"]);
 
 interface ObjectGridProps<T> {
   id: string;
@@ -417,4 +609,12 @@ export function UniquesGrid({ id }: { id: string }) {
 
 export function ChecksGrid({ id }: { id: string }) {
   return <ObjectGrid id={id} kind="checks" rows={useRows(id, "checks")} columns={asColumns(CHECK_COLUMNS)} emptyText="No check constraints. Click Add Check to create one." />;
+}
+
+export function ExcludesGrid({ id }: { id: string }) {
+  return <ObjectGrid id={id} kind="excludes" rows={useRows(id, "excludes")} columns={asColumns(EXCLUDE_COLUMNS)} emptyText="No exclusion constraints. Click Add Exclude to create one." />;
+}
+
+export function TriggersGrid({ id }: { id: string }) {
+  return <ObjectGrid id={id} kind="triggers" rows={useRows(id, "triggers")} columns={asColumns(TRIGGER_COLUMNS)} emptyText="No triggers. Click Add Trigger to create one." />;
 }

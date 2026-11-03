@@ -1,28 +1,41 @@
 import { useState } from "react";
 import { ArrowDown, ArrowUp, Plus, X } from "lucide-react";
-import type { IndexColumn } from "../../lib/types";
 import { Modal } from "../Modal";
+
+/** A picked field or expression, with a sort order (indexes) or operator (excludes). */
+export interface PickedKey {
+  column: string;
+  descending?: boolean;
+  operator?: string;
+}
+
+/** Common exclusion operators, suggested for each element. */
+const OPERATORS = ["=", "&&", "<>", "<@", "@>", "~=", "-|-"];
+const OPERATORS_LIST_ID = "huxdb-exclude-operators";
 
 interface ColumnPickerProps {
   title: string;
   /** Fields that can be picked, in table order. */
   available: string[];
-  value: IndexColumn[];
+  value: PickedKey[];
   /** Offer ASC / DESC per picked field (indexes). */
   withOrder?: boolean;
+  /** Ask for an operator per picked field (exclusion constraints). */
+  withOperator?: boolean;
   /** Allow typing an expression key (indexes). */
   withExpressions?: boolean;
-  onSave: (value: IndexColumn[]) => void;
+  onSave: (value: PickedKey[]) => void;
   onClose: () => void;
 }
 
 /** Picks an ordered list of fields: available on the left, picked on the right. */
-export function ColumnPickerDialog({ title, available, value, withOrder, withExpressions, onSave, onClose }: ColumnPickerProps) {
-  const [picked, setPicked] = useState<IndexColumn[]>(value);
+export function ColumnPickerDialog({ title, available, value, withOrder, withOperator, withExpressions, onSave, onClose }: ColumnPickerProps) {
+  const [picked, setPicked] = useState<PickedKey[]>(value);
   const [expression, setExpression] = useState("");
   const unpicked = available.filter((name) => !picked.some((p) => p.column === name));
 
-  const add = (column: string) => setPicked((p) => [...p, { column, descending: false }]);
+  const add = (column: string) =>
+    setPicked((p) => [...p, withOperator ? { column, operator: "=" } : { column, descending: false }]);
   const move = (i: number, by: -1 | 1) =>
     setPicked((p) => {
       const next = [...p];
@@ -32,6 +45,13 @@ export function ColumnPickerDialog({ title, available, value, withOrder, withExp
 
   return (
     <Modal title={title} onClose={onClose} className="max-w-2xl">
+      {withOperator && (
+        <datalist id={OPERATORS_LIST_ID}>
+          {OPERATORS.map((op) => (
+            <option key={op} value={op} />
+          ))}
+        </datalist>
+      )}
       <div className="grid grid-cols-2 gap-4 text-sm">
         <div className="flex flex-col gap-1">
           <span className="text-base-content/60">Available</span>
@@ -77,6 +97,16 @@ export function ColumnPickerDialog({ title, available, value, withOrder, withExp
                 <span className="min-w-0 flex-1 truncate" title={p.column}>
                   {p.column}
                 </span>
+                {withOperator && (
+                  <input
+                    className="input input-xs w-16 font-mono"
+                    list={OPERATORS_LIST_ID}
+                    value={p.operator ?? ""}
+                    aria-label={`Operator for ${p.column}`}
+                    spellCheck={false}
+                    onChange={(e) => setPicked((all) => all.map((q, j) => (j === i ? { ...q, operator: e.target.value } : q)))}
+                  />
+                )}
                 {withOrder && (
                   <select
                     className="select select-xs w-20"
