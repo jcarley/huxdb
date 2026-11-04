@@ -3,6 +3,8 @@ import type { LucideIcon } from "lucide-react";
 import { newConnection } from "../lib/types";
 import { useConnections } from "../stores/connections";
 import { isGroupSelection, useExplorer } from "../stores/explorer";
+import type { TreeNodeRef } from "../stores/explorer";
+import { useTabs } from "../stores/tabs";
 
 interface ToolbarButtonProps {
   icon: LucideIcon;
@@ -32,6 +34,16 @@ function Separator() {
   return <div role="separator" aria-orientation="vertical" className="mx-1 h-10 w-px bg-base-300" />;
 }
 
+/** A new query on the selected connection, in the selection's database and schema if it has them. */
+function openQuery(selected: TreeNodeRef) {
+  const config = useConnections.getState().connections.find((c) => c.id === selected.connectionId);
+  useTabs.getState().openQuery({
+    connectionId: selected.connectionId,
+    database: "database" in selected ? selected.database : config?.database || "postgres",
+    schema: "schema" in selected ? selected.schema : "",
+  });
+}
+
 /** Navicat-style module bar. Add a ToolbarButton per module as modules are built. */
 export function Toolbar() {
   const openEditor = useConnections((s) => s.openEditor);
@@ -42,8 +54,7 @@ export function Toolbar() {
   return (
     <header className="flex items-center gap-1 border-b border-base-300 bg-base-100 px-2 py-1">
       <ToolbarButton icon={Plug} label="Connection" onClick={() => openEditor(newConnection())} />
-      {/* Placeholder: the query editor arrives in a later iteration. */}
-      <ToolbarButton icon={SquarePen} label="New Query" />
+      <ToolbarButton icon={SquarePen} label="New Query" disabled={!selected} onClick={() => selected && openQuery(selected)} />
       <Separator />
       <ToolbarButton
         icon={Table}

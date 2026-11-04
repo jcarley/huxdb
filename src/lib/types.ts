@@ -515,3 +515,62 @@ export interface EditBatch {
   /** Each new row lists only its edited columns; the rest get their defaults. */
   inserts: CellValue[][];
 }
+
+// Query editor (`src-tauri/src/query/model.rs`). Offsets are UTF-16, as CodeMirror's are.
+
+/** Where a query tab's SQL runs. An empty `schema` leaves the server's search_path. */
+export interface QueryTarget {
+  connectionId: string;
+  database: string;
+  schema: string;
+}
+
+export type RunScope = { kind: "all" } | { kind: "selection"; from: number; to: number } | { kind: "cursor"; pos: number };
+
+export interface TextRange {
+  from: number;
+  to: number;
+}
+
+/** A tab's transaction. `aborted` failed, and only a rollback gets out of it. */
+export type TxState = "idle" | "open" | "aborted";
+
+/** A statement's rows, as text. Columns go by position, as names can repeat. */
+export interface ResultSet {
+  columns: string[];
+  rows: (string | null)[][];
+  /** A limit was reached, so some rows aren't here. */
+  truncated: boolean;
+  /** The limit stopped the statement, rather than it running to the end. */
+  cancelledAtLimit: boolean;
+}
+
+export interface QueryError {
+  message: string;
+  code: string | null;
+  detail: string | null;
+  hint: string | null;
+  /** Where in the text the server says it went wrong. */
+  position: number | null;
+}
+
+export interface StatementOutcome {
+  index: number;
+  range: TextRange;
+  sql: string;
+  elapsedMs: number;
+  /** Rows the server reports, also past a limit. Null if it didn't finish. */
+  rowsAffected: number | null;
+  result: ResultSet | null;
+  error: QueryError | null;
+  /** Stop ended it. */
+  cancelled: boolean;
+  notices: string[];
+  note: string | null;
+  tx: TxState;
+}
+
+export type QueryEvent =
+  | { event: "statement-started"; index: number; total: number; range: TextRange }
+  | { event: "statement-finished"; outcome: StatementOutcome }
+  | { event: "run-done"; tx: TxState; stopped: boolean; sessionLost: string | null };

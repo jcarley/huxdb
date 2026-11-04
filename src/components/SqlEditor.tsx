@@ -1,14 +1,20 @@
 import { useEffect, useRef } from "react";
+import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { PostgreSQL, sql } from "@codemirror/lang-sql";
 import { defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { EditorState } from "@codemirror/state";
-import { EditorView, lineNumbers } from "@codemirror/view";
+import type { Extension } from "@codemirror/state";
+import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 
 interface SqlEditorProps {
   value: string;
   readOnly?: boolean;
   onChange?: (value: string) => void;
   className?: string;
+  /** Added to the editor's own; fixed per mount. */
+  extensions?: Extension[];
+  /** The editor, for callers that move its cursor or read its selection. */
+  onReady?: (view: EditorView) => void;
 }
 
 const theme = EditorView.theme({
@@ -18,7 +24,7 @@ const theme = EditorView.theme({
 });
 
 /** CodeMirror 6 with PostgreSQL highlighting. Uncontrolled inside; `value` changes replace the text. */
-export function SqlEditor({ value, readOnly = false, onChange, className = "" }: SqlEditorProps) {
+export function SqlEditor({ value, readOnly = false, onChange, className = "", extensions = [], onReady }: SqlEditorProps) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
@@ -30,7 +36,10 @@ export function SqlEditor({ value, readOnly = false, onChange, className = "" }:
       state: EditorState.create({
         doc: value,
         extensions: [
+          ...extensions,
           lineNumbers(),
+          history(),
+          keymap.of([...defaultKeymap, ...historyKeymap]),
           sql({ dialect: PostgreSQL }),
           syntaxHighlighting(defaultHighlightStyle),
           EditorView.lineWrapping,
@@ -44,8 +53,9 @@ export function SqlEditor({ value, readOnly = false, onChange, className = "" }:
       }),
     });
     view.current = editor;
+    onReady?.(editor);
     return () => editor.destroy();
-    // Built once; `value` is synced below and `readOnly` is fixed per mount.
+    // Built once; `value` is synced below; the rest is fixed per mount.
   }, []);
 
   useEffect(() => {

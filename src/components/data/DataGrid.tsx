@@ -1,5 +1,5 @@
 import { createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from "react";
+import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
 import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
 import { useShallow } from "zustand/react/shallow";
 import { ArrowDown, ArrowUp, Ban, CircleSlash, Equal, EqualNot, Eraser, KeyRound, ListFilter, Trash2 } from "lucide-react";
@@ -10,7 +10,8 @@ import { tableKey, useDataGridPrefs } from "../../stores/dataGridPrefs";
 import { DesignerId } from "../designer/context";
 import { useContextMenu } from "../tree/ContextMenu";
 import type { MenuItem } from "../tree/ContextMenu";
-import { MIN_WIDTH, defaultWidths, fitWidth } from "./columnWidths";
+import { defaultWidths, fitWidth } from "./columnWidths";
+import { ResizeHandle, SizedTable } from "./SizedTable";
 
 // Rendering: `DataGrid` subscribes only to what changes the set of rows; each
 // `DataRow` subscribes to its own pending values, selection and editing state
@@ -282,61 +283,13 @@ function HeaderLabel({ column, isKey, children }: { column: DataColumn; isKey: b
   );
 }
 
-/** The drag handle on a header's right edge; double-click fits the column. */
-function ResizeHandle({ onResize, onFit }: { onResize: (width: number) => void; onFit: () => void }) {
-  const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const handle = e.currentTarget;
-    const startWidth = handle.parentElement!.getBoundingClientRect().width;
-    const startX = e.clientX;
-    handle.setPointerCapture(e.pointerId);
-    const move = (m: globalThis.PointerEvent) => onResize(Math.max(MIN_WIDTH, startWidth + m.clientX - startX));
-    const end = () => {
-      handle.removeEventListener("pointermove", move);
-      handle.removeEventListener("pointerup", end);
-      handle.removeEventListener("pointercancel", end);
-    };
-    handle.addEventListener("pointermove", move);
-    handle.addEventListener("pointerup", end);
-    handle.addEventListener("pointercancel", end);
-  };
-  return (
-    <div
-      role="separator"
-      aria-orientation="vertical"
-      title="Drag to resize; double-click to fit"
-      className="absolute top-0 -right-1 z-[3] h-full w-2 cursor-col-resize hover:bg-primary/40"
-      onPointerDown={onPointerDown}
-      onDoubleClick={onFit}
-    />
-  );
-}
-
-/** The grid's <table> with its column widths: the user's (saved per table) or
+/** The grid's table with its column widths: the user's (saved per table) or
  * `defaults`. Only this re-renders when a width changes; its children don't. */
-function SizedTable({ table, columns, defaults, children }: { table: string; columns: DataColumn[]; defaults: number[]; children: ReactNode }) {
+function SavedWidthsTable({ table, columns, defaults, children }: { table: string; columns: DataColumn[]; defaults: number[]; children: ReactNode }) {
   const saved = useDataGridPrefs((s) => s.columnWidths[table]);
-  const widths = columns.map((c, i) => saved?.[c.name] ?? defaults[i] ?? FALLBACK_WIDTH);
-  const total = widths.reduce((sum, w) => sum + w, 0);
-  return (
-    <table
-      // text-[1em]: daisyUI's .table sets its own font size; follow the grid's zoom instead.
-      className="table table-pin-rows table-fixed border-separate border-spacing-0 text-[1em]"
-      style={{ width: `calc(${ROW_HEADER_WIDTH} + ${total}px)` }}
-    >
-      <colgroup>
-        <col style={{ width: ROW_HEADER_WIDTH }} />
-        {widths.map((w, i) => (
-          <col key={columns[i].name} style={{ width: w }} />
-        ))}
-      </colgroup>
-      {children}
-    </table>
-  );
+  return <SizedTable widths={columns.map((c, i) => saved?.[c.name] ?? defaults[i] ?? FALLBACK_WIDTH)}>{children}</SizedTable>;
 }
 
-/** Scales with the font size. */
-const ROW_HEADER_WIDTH = "2em";
 /** Before the default widths are measured. */
 const FALLBACK_WIDTH = 120;
 
@@ -384,7 +337,7 @@ export const DataGrid = memo(function DataGrid({ id }: { id: string }) {
   return (
     <DesignerId.Provider value={id}>
       <div className="min-h-0 flex-1 overflow-auto" style={{ fontSize }} onKeyDown={onZoomKey}>
-        <SizedTable table={savedKey} columns={source.columns} defaults={defaults}>
+        <SavedWidthsTable table={savedKey} columns={source.columns} defaults={defaults}>
           <thead className="text-[1em]">
             {table.getHeaderGroups().map((group) => (
               <tr key={group.id}>
@@ -420,7 +373,7 @@ export const DataGrid = memo(function DataGrid({ id }: { id: string }) {
               </DataRow>
             ))}
           </tbody>
-        </SizedTable>
+        </SavedWidthsTable>
         {data.length === 0 && <p className="p-4 text-center text-sm text-base-content/50">No rows</p>}
       </div>
     </DesignerId.Provider>

@@ -246,7 +246,7 @@ function Messages({ id, editor }: { id: string; editor: Editor }) {
   );
 }
 
-function BarButton({ icon: Icon, label, disabled, onClick }: { icon: LucideIcon; label: string; disabled: boolean; onClick: () => void }) {
+export function BarButton({ icon: Icon, label, disabled, onClick }: { icon: LucideIcon; label: string; disabled: boolean; onClick: () => void }) {
   return (
     <button type="button" className="btn btn-ghost btn-xs btn-square" title={label} aria-label={label} disabled={disabled} onClick={onClick}>
       <Icon className="size-4" strokeWidth={1.75} />

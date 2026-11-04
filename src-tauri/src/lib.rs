@@ -2,10 +2,12 @@ mod connections;
 mod designer;
 mod editor;
 mod explorer;
+mod query;
 
 use connections::store::ConnectionStore;
 use editor::EditorSessions;
 use explorer::sessions::SessionManager;
+use query::QuerySessions;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -17,6 +19,7 @@ pub fn run() {
             app.manage(ConnectionStore::load(path));
             app.manage(SessionManager::default());
             app.manage(EditorSessions::default());
+            app.manage(QuerySessions::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -49,6 +52,11 @@ pub fn run() {
             editor::data_fetch_page,
             editor::data_count,
             editor::data_apply,
+            query::query_split,
+            query::query_run,
+            query::query_cancel,
+            query::query_end,
+            query::query_close,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

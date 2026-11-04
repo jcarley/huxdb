@@ -7,7 +7,7 @@
 
 mod model;
 mod postgres;
-mod session_postgres;
+pub(crate) mod session_postgres;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

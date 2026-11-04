@@ -1,9 +1,10 @@
 // Main-pane tabs: the permanent Objects tab (activeId null) plus one tab per open
-// designer or data editor.
+// designer, data editor or query.
 
 import { create } from "zustand";
 import { nodeKey } from "./explorer";
 import { isDataDirty, useDataEditor } from "./dataEditor";
+import { isQueryDirty, useQueryEditor } from "./queryEditor";
 import { isDirty as isTableDirty, useTableDesigner } from "./tableDesigner";
 import { isViewDirty, useViewDesigner } from "./viewDesigner";
 
@@ -11,11 +12,12 @@ import { isViewDirty, useViewDesigner } from "./viewDesigner";
 export interface SchemaRef {
   connectionId: string;
   database: string;
+  /** Empty on a query tab means the server's default search_path. */
   schema: string;
 }
 
-/** A table or view designer, or a table's data editor. */
-export type DesignerKind = "table" | "view" | "data";
+/** A table or view designer, a table's data editor, or a query. */
+export type DesignerKind = "table" | "view" | "data" | "query";
 
 export interface DesignerTab extends SchemaRef {
   id: string;
@@ -40,6 +42,8 @@ interface TabsState {
   openTableDesigner: (ref: SchemaRef, table: string | null) => void;
   openViewDesigner: (ref: SchemaRef, view: string | null) => void;
   openDataEditor: (ref: SchemaRef, table: string) => void;
+  /** Opens a new query tab. */
+  openQuery: (ref: SchemaRef) => void;
   activate: (id: string | null) => void;
   /** Closes a clean tab; a dirty one prompts first. */
   requestClose: (id: string) => void;
@@ -48,6 +52,8 @@ interface TabsState {
   close: (id: string) => void;
   /** Points a tab at the object it now designs (after a new one's first save). */
   setName: (id: string, name: string) => void;
+  /** A query tab changed database or schema. */
+  setTarget: (id: string, database: string, schema: string) => void;
   /** Closes every tab of a connection (it was edited or deleted). */
   forgetConnection: (connectionId: string) => void;
   schemaChanged: (ref: SchemaRef) => void;
@@ -57,10 +63,15 @@ interface TabsState {
 const schemaKey = ({ connectionId, database, schema }: SchemaRef) =>
   nodeKey({ kind: "schema", connectionId, database, schema });
 
-const KIND_LABELS: Record<DesignerKind, string> = { table: "Table", view: "View", data: "Data" };
+const KIND_LABELS: Record<DesignerKind, string> = { table: "Table", view: "View", data: "Data", query: "Query" };
 
-export const tabTitle = (tab: DesignerTab) =>
-  `${tab.name ?? "Untitled"} @${tab.database}.${tab.schema} (${KIND_LABELS[tab.kind]})`;
+export const tabTitle = (tab: DesignerTab) => {
+  const where = tab.schema ? `${tab.database}.${tab.schema}` : tab.database;
+  return tab.kind === "query" ? `${tab.name} @${where}` : `${tab.name ?? "Untitled"} @${where} (${KIND_LABELS[tab.kind]})`;
+};
+
+/** Numbers query tabs, which have no object to be named after. */
+let queryCount = 0;
 
 /** Whether a tab has unsaved edits (or an open transaction), asking the store for its kind. */
 export const isTabDirty = (tab: DesignerTab) => {
@@ -71,6 +82,8 @@ export const isTabDirty = (tab: DesignerTab) => {
       return isViewDirty(tab.id);
     case "data":
       return isDataDirty(tab.id);
+    case "query":
+      return isQueryDirty(tab.id);
   }
 };
 
@@ -83,6 +96,8 @@ const storeFor = (kind: DesignerKind): { open: (tab: DesignerTab) => void; dispo
       return useViewDesigner.getState();
     case "data":
       return useDataEditor.getState();
+    case "query":
+      return useQueryEditor.getState();
   }
 };
 
@@ -115,6 +130,7 @@ export const useTabs = create<TabsState>((set, get) => ({
   openTableDesigner: (ref, table) => get().openDesigner("table", ref, table),
   openViewDesigner: (ref, view) => get().openDesigner("view", ref, view),
   openDataEditor: (ref, table) => get().openDesigner("data", ref, table),
+  openQuery: (ref) => get().openDesigner("query", ref, `Query ${++queryCount}`),
 
   activate: (id) => set({ activeId: id }),
 
@@ -139,6 +155,7 @@ export const useTabs = create<TabsState>((set, get) => ({
   },
 
   setName: (id, name) => set((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, name } : t)) })),
+  setTarget: (id, database, schema) => set((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, database, schema } : t)) })),
 
   forgetConnection: (connectionId) => {
     for (const t of get().tabs) if (t.connectionId === connectionId) get().close(t.id);

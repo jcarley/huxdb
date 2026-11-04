@@ -1,16 +1,18 @@
-import { Eye, PencilRuler, Table, X } from "lucide-react";
+import { Eye, PencilRuler, SquareTerminal, Table, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { dataDirty, useDataEditor } from "../stores/dataEditor";
+import { queryDirty, useQueryEditor } from "../stores/queryEditor";
 import { designerDirty, useTableDesigner } from "../stores/tableDesigner";
 import { tabTitle, useTabs } from "../stores/tabs";
 import type { DesignerTab } from "../stores/tabs";
 import { DetailsPane } from "./DetailsPane";
 import { DataEditor } from "./data/DataEditor";
+import { QueryEditor } from "./query/QueryEditor";
 import { viewDirty, useViewDesigner } from "../stores/viewDesigner";
 import { TableDesigner } from "./designer/TableDesigner";
 import { ViewDesigner } from "./designer/ViewDesigner";
 
-/** The main pane: a permanent Objects tab plus one closable tab per open designer or data editor. */
+/** The main pane: a permanent Objects tab plus one closable tab per open designer, data editor or query. */
 export function MainArea() {
   const tabs = useTabs((s) => s.tabs);
   const activeId = useTabs((s) => s.activeId);
@@ -32,11 +34,24 @@ export function MainArea() {
       </div>
       {tabs.map((tab) => (
         <div key={tab.id} className={`min-h-0 flex-1 ${activeId === tab.id ? "flex" : "hidden"}`}>
-          {tab.kind === "table" ? <TableDesigner id={tab.id} /> : tab.kind === "view" ? <ViewDesigner id={tab.id} /> : <DataEditor id={tab.id} />}
+          <TabContent tab={tab} />
         </div>
       ))}
     </main>
   );
+}
+
+function TabContent({ tab }: { tab: DesignerTab }) {
+  switch (tab.kind) {
+    case "table":
+      return <TableDesigner id={tab.id} />;
+    case "view":
+      return <ViewDesigner id={tab.id} />;
+    case "data":
+      return <DataEditor id={tab.id} />;
+    case "query":
+      return <QueryEditor id={tab.id} />;
+  }
 }
 
 function TabButton({ active, onClick, onAuxClick, title, children }: { active: boolean; onClick: () => void; onAuxClick?: () => void; title?: string; children: ReactNode }) {
@@ -61,9 +76,10 @@ function DesignerTabButton({ tab, active }: { tab: DesignerTab; active: boolean 
     table: useTableDesigner((s) => designerDirty(s.designers[tab.id])),
     view: useViewDesigner((s) => viewDirty(s.designers[tab.id])),
     data: useDataEditor((s) => dataDirty(s.editors[tab.id])),
+    query: useQueryEditor((s) => queryDirty(s.editors[tab.id])),
   };
   const dirty = dirtyByKind[tab.kind];
-  const Icon = { table: PencilRuler, view: Eye, data: Table }[tab.kind];
+  const Icon = { table: PencilRuler, view: Eye, data: Table, query: SquareTerminal }[tab.kind];
   const { activate, requestClose } = useTabs.getState();
   const title = tabTitle(tab);
 

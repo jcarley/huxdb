@@ -1,7 +1,8 @@
 //! A tab's database session: an optional user transaction held on one pooled
 //! connection across commands, and Stop for whatever the tab is running.
 //!
-//! Not specific to table data, so a SQL query editor can reuse it.
+//! Not specific to table data, but tied to the pool: query tabs each have a
+//! connection of their own (see `query/session_postgres.rs`).
 
 use sqlx::pool::PoolConnection;
 use sqlx::{PgConnection, PgPool, Postgres};

@@ -1,9 +1,11 @@
 // Typed wrappers around the Tauri commands in `src-tauri/src/connections/mod.rs`,
-// `src-tauri/src/explorer/mod.rs`, `src-tauri/src/designer/mod.rs` and `src-tauri/src/editor/mod.rs`.
+// `src-tauri/src/explorer/mod.rs`, `src-tauri/src/designer/mod.rs`, `src-tauri/src/editor/mod.rs`
+// and `src-tauri/src/query/mod.rs`.
 // Commands reject with a plain error string.
 
 import { invoke } from "@tauri-apps/api/core";
-import type { ConnectionConfig, DataPage, DataSpec, DataTarget, EditBatch, QualifiedName, QueryResult, SchemaObjects, TableDesign, TableInfo, ViewDesign, ViewInfo } from "./types";
+import type { Channel } from "@tauri-apps/api/core";
+import type { ConnectionConfig, DataPage, DataSpec, DataTarget, EditBatch, QualifiedName, QueryEvent, QueryResult, QueryTarget, RunScope, SchemaObjects, TableDesign, TableInfo, TextRange, ViewDesign, ViewInfo } from "./types";
 
 export const listConnections = () => invoke<ConnectionConfig[]>("list_connections");
 
@@ -84,6 +86,22 @@ export const previewViewRows = (connectionId: string, database: string, definiti
 /** EXPLAIN (no ANALYZE) of an unsaved definition, one line per entry. */
 export const explainView = (connectionId: string, database: string, definition: string) =>
   invoke<string[]>("explain_view", { connectionId, database, definition });
+
+// Query editor.
+
+/** The statements in `sql`. */
+export const querySplit = (sql: string) => invoke<TextRange[]>("query_split", { sql });
+
+/** Rejects if nothing ran. Otherwise a `run-done` event ends the run: it can arrive after this resolves. */
+export const queryRun = (tabId: string, runId: number, target: QueryTarget, sql: string, scope: RunScope, continueOnError: boolean, onEvent: Channel<QueryEvent>) =>
+  invoke<void>("query_run", { tabId, runId, target, sql, scope, continueOnError, onEvent });
+
+export const queryCancel = (tabId: string, runId: number) => invoke<void>("query_cancel", { tabId, runId });
+
+/** Commits or rolls back the tab's transaction. It's over afterwards, even if this rejects. */
+export const queryEnd = (tabId: string, commit: boolean) => invoke<void>("query_end", { tabId, commit });
+
+export const queryClose = (tabId: string) => invoke<void>("query_close", { tabId });
 
 // Editor sessions (a tab's transaction and Stop) --------------------------------
 

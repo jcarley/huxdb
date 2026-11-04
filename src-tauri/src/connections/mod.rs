@@ -11,6 +11,7 @@ use tauri::State;
 
 use crate::editor::EditorSessions;
 use crate::explorer::sessions::SessionManager;
+use crate::query::QuerySessions;
 
 #[tauri::command]
 pub fn list_connections(store: State<'_, ConnectionStore>) -> Vec<ConnectionConfig> {
@@ -23,11 +24,13 @@ pub fn save_connection(
     store: State<'_, ConnectionStore>,
     sessions: State<'_, SessionManager>,
     editors: State<'_, EditorSessions>,
+    queries: State<'_, QuerySessions>,
     config: ConnectionConfig,
 ) -> Result<ConnectionConfig, String> {
     let saved = store.save(config)?;
     // Open pools were built from the old settings; drop them.
     editors.close_connection(&saved.id);
+    queries.close_connection(&saved.id);
     sessions.close(&saved.id);
     Ok(saved)
 }
@@ -37,10 +40,12 @@ pub fn delete_connection(
     store: State<'_, ConnectionStore>,
     sessions: State<'_, SessionManager>,
     editors: State<'_, EditorSessions>,
+    queries: State<'_, QuerySessions>,
     id: String,
 ) -> Result<(), String> {
     store.delete(&id)?;
     editors.close_connection(&id);
+    queries.close_connection(&id);
     sessions.close(&id);
     Ok(())
 }
