@@ -1,10 +1,12 @@
-import { PencilRuler, X } from "lucide-react";
+import { Eye, PencilRuler, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { designerDirty, useTableDesigner } from "../stores/tableDesigner";
 import { tabTitle, useTabs } from "../stores/tabs";
 import type { DesignerTab } from "../stores/tabs";
 import { DetailsPane } from "./DetailsPane";
+import { viewDirty, useViewDesigner } from "../stores/viewDesigner";
 import { TableDesigner } from "./designer/TableDesigner";
+import { ViewDesigner } from "./designer/ViewDesigner";
 
 /** The main pane: a permanent Objects tab plus one closable tab per open designer. */
 export function MainArea() {
@@ -28,7 +30,7 @@ export function MainArea() {
       </div>
       {tabs.map((tab) => (
         <div key={tab.id} className={`min-h-0 flex-1 ${activeId === tab.id ? "flex" : "hidden"}`}>
-          <TableDesigner id={tab.id} />
+          {tab.kind === "table" ? <TableDesigner id={tab.id} /> : <ViewDesigner id={tab.id} />}
         </div>
       ))}
     </main>
@@ -52,13 +54,17 @@ function TabButton({ active, onClick, onAuxClick, title, children }: { active: b
 }
 
 function DesignerTabButton({ tab, active }: { tab: DesignerTab; active: boolean }) {
-  const dirty = useTableDesigner((s) => designerDirty(s.designers[tab.id]));
+  // Both hooks run on every render; only the tab's own kind counts.
+  const tableDirty = useTableDesigner((s) => designerDirty(s.designers[tab.id]));
+  const viewIsDirty = useViewDesigner((s) => viewDirty(s.designers[tab.id]));
+  const dirty = tab.kind === "table" ? tableDirty : viewIsDirty;
+  const Icon = tab.kind === "table" ? PencilRuler : Eye;
   const { activate, requestClose } = useTabs.getState();
   const title = tabTitle(tab);
 
   return (
     <TabButton active={active} title={title} onClick={() => activate(tab.id)} onAuxClick={() => requestClose(tab.id)}>
-      <PencilRuler className="size-3.5 text-primary" strokeWidth={1.75} />
+      <Icon className="size-3.5 text-primary" strokeWidth={1.75} />
       <span className="max-w-64 truncate">{title}</span>
       {dirty && <span className="text-primary" aria-label="Unsaved changes">●</span>}
       <button

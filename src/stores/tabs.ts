@@ -2,7 +2,8 @@
 
 import { create } from "zustand";
 import { nodeKey } from "./explorer";
-import { isDirty, useTableDesigner } from "./tableDesigner";
+import { isDirty as isTableDirty, useTableDesigner } from "./tableDesigner";
+import { isViewDirty, useViewDesigner } from "./viewDesigner";
 
 /** Where a designer's object lives. */
 export interface SchemaRef {
@@ -11,11 +12,13 @@ export interface SchemaRef {
   schema: string;
 }
 
+export type DesignerKind = "table" | "view";
+
 export interface DesignerTab extends SchemaRef {
   id: string;
-  kind: "table";
-  /** Table being designed; null until a new table is first saved. */
-  table: string | null;
+  kind: DesignerKind;
+  /** Table or view being designed; null until a new one is first saved. */
+  name: string | null;
 }
 
 interface TabsState {
@@ -29,16 +32,18 @@ interface TabsState {
   /** Bumped per schema key when a save changes its objects, so object lists reload. */
   schemaVersions: Record<string, number>;
 
-  /** Opens (or focuses) the designer for `table`, or a new-table designer when null. */
+  /** Opens (or focuses) the designer for the named table or view, or a new one when `name` is null. */
+  openDesigner: (kind: DesignerKind, ref: SchemaRef, name: string | null) => void;
   openTableDesigner: (ref: SchemaRef, table: string | null) => void;
+  openViewDesigner: (ref: SchemaRef, view: string | null) => void;
   activate: (id: string | null) => void;
   /** Closes a clean tab; a dirty one prompts first. */
   requestClose: (id: string) => void;
   cancelClose: () => void;
   /** Closes a tab, discarding its edits. */
   close: (id: string) => void;
-  /** Points a tab at the table it now designs (after a new table's first save). */
-  setTable: (id: string, table: string) => void;
+  /** Points a tab at the object it now designs (after a new one's first save). */
+  setName: (id: string, name: string) => void;
   /** Closes every tab of a connection (it was edited or deleted). */
   forgetConnection: (connectionId: string) => void;
   schemaChanged: (ref: SchemaRef) => void;
@@ -48,9 +53,13 @@ interface TabsState {
 const schemaKey = ({ connectionId, database, schema }: SchemaRef) =>
   nodeKey({ kind: "schema", connectionId, database, schema });
 
-export const tabTitle = (tab: DesignerTab) => `${tab.table ?? "Untitled"} @${tab.database}.${tab.schema} (Table)`;
+export const tabTitle = (tab: DesignerTab) =>
+  `${tab.name ?? "Untitled"} @${tab.database}.${tab.schema} (${tab.kind === "table" ? "Table" : "View"})`;
 
-export const hasUnsavedTabs = () => useTabs.getState().tabs.some((t) => isDirty(t.id));
+/** Whether a tab's designer has unsaved edits, asking the store for its kind. */
+export const isTabDirty = (tab: DesignerTab) => (tab.kind === "table" ? isTableDirty(tab.id) : isViewDirty(tab.id));
+
+export const hasUnsavedTabs = () => useTabs.getState().tabs.some(isTabDirty);
 
 export const useTabs = create<TabsState>((set, get) => ({
   tabs: [],
@@ -59,33 +68,40 @@ export const useTabs = create<TabsState>((set, get) => ({
   quitRequested: false,
   schemaVersions: {},
 
-  openTableDesigner: (ref, table) => {
+  openDesigner: (kind, ref, name) => {
     const { connectionId, database, schema } = ref;
     const existing =
-      table !== null &&
+      name !== null &&
       get().tabs.find(
-        (t) => t.connectionId === connectionId && t.database === database && t.schema === schema && t.table === table,
+        (t) =>
+          t.kind === kind && t.connectionId === connectionId && t.database === database && t.schema === schema && t.name === name,
       );
     if (existing) {
       set({ activeId: existing.id });
       return;
     }
-    const tab: DesignerTab = { id: crypto.randomUUID(), kind: "table", connectionId, database, schema, table };
-    useTableDesigner.getState().open(tab);
+    const tab: DesignerTab = { id: crypto.randomUUID(), kind, connectionId, database, schema, name };
+    if (kind === "table") useTableDesigner.getState().open(tab);
+    else useViewDesigner.getState().open(tab);
     set((s) => ({ tabs: [...s.tabs, tab], activeId: tab.id }));
   },
+
+  openTableDesigner: (ref, table) => get().openDesigner("table", ref, table),
+  openViewDesigner: (ref, view) => get().openDesigner("view", ref, view),
 
   activate: (id) => set({ activeId: id }),
 
   requestClose: (id) => {
-    if (isDirty(id)) set({ pendingClose: id, activeId: id });
+    const tab = get().tabs.find((t) => t.id === id);
+    if (tab && isTabDirty(tab)) set({ pendingClose: id, activeId: id });
     else get().close(id);
   },
 
   cancelClose: () => set({ pendingClose: null }),
 
   close: (id) => {
-    useTableDesigner.getState().dispose(id);
+    if (get().tabs.find((t) => t.id === id)?.kind === "view") useViewDesigner.getState().dispose(id);
+    else useTableDesigner.getState().dispose(id);
     set((s) => {
       const index = s.tabs.findIndex((t) => t.id === id);
       const tabs = s.tabs.filter((t) => t.id !== id);
@@ -95,7 +111,7 @@ export const useTabs = create<TabsState>((set, get) => ({
     });
   },
 
-  setTable: (id, table) => set((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, table } : t)) })),
+  setName: (id, name) => set((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, name } : t)) })),
 
   forgetConnection: (connectionId) => {
     for (const t of get().tabs) if (t.connectionId === connectionId) get().close(t.id);

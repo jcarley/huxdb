@@ -362,3 +362,31 @@ export const newColumn = (): ColumnDesign => ({
   comment: null,
   keyOrder: null,
 });
+
+// Mirrors src-tauri/src/designer/view.rs and view_postgres.rs
+
+export type CheckOption = "local" | "cascaded";
+
+export interface ViewDesign {
+  schema: string;
+  name: string;
+  /** The SELECT, as PostgreSQL normalized it or as typed. */
+  definition: string;
+  /** Null on a new view means the current user. */
+  owner: string | null;
+  comment: string | null;
+  checkOption: CheckOption | null;
+  securityBarrier: boolean;
+  /** PostgreSQL 15+. */
+  securityInvoker: boolean;
+  /** Read-only: whether the server has security_invoker. */
+  supportsSecurityInvoker: boolean;
+}
+
+/** Preview rows, every value as text (null for NULL). */
+export interface QueryResult {
+  columns: string[];
+  rows: (string | null)[][];
+  /** More rows exist than were returned. */
+  truncated: boolean;
+}

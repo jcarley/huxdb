@@ -1,10 +1,15 @@
-//! Object designer: loads a table's design, previews the DDL for an edit and
-//! saves it. The frontend side is `src/stores/tableDesigner.ts`.
+//! Object designer: loads a table's or view's design, previews the DDL for an
+//! edit and saves it. The frontend side is `src/stores/tableDesigner.ts` and
+//! `src/stores/viewDesigner.ts`.
 
 mod model;
 mod postgres;
+mod view;
+mod view_postgres;
 
 use model::TableDesign;
+use view::ViewDesign;
+use view_postgres::QueryResult;
 use tauri::State;
 
 use crate::connections::store::ConnectionStore;
@@ -102,4 +107,76 @@ pub async fn save_table_design(
     let (original, edited) = prepare(original, edited)?;
     let pool = pool_for(&store, &sessions, &connection_id, Some(&database))?;
     postgres::save_table_design(&pool, original.as_ref(), &edited).await
+}
+
+// View designer ----------------------------------------------------------------
+
+#[tauri::command]
+pub async fn load_view_design(
+    store: State<'_, ConnectionStore>,
+    sessions: State<'_, SessionManager>,
+    connection_id: String,
+    database: String,
+    schema: String,
+    view: String,
+) -> Result<ViewDesign, String> {
+    let pool = pool_for(&store, &sessions, &connection_id, Some(&database))?;
+    view_postgres::load_view_design(&pool, &schema, &view).await
+}
+
+fn prepare_view(original: Option<ViewDesign>, edited: ViewDesign) -> Result<(Option<ViewDesign>, ViewDesign), String> {
+    let edited = edited.normalized();
+    edited.validate()?;
+    Ok((original.map(|o| o.normalized()), edited))
+}
+
+/// The statements Save would run, for the SQL Preview tab.
+#[tauri::command]
+pub fn preview_view_ddl(original: Option<ViewDesign>, edited: ViewDesign, recreate: bool) -> Result<Vec<String>, String> {
+    let (original, edited) = prepare_view(original, edited)?;
+    Ok(view_postgres::generate_view_ddl(original.as_ref(), &edited, recreate))
+}
+
+/// Creates, replaces or (with `recreate`) drops and re-creates the view in one
+/// transaction. A column change that needs `recreate` fails with an error
+/// starting with `[recreate] `.
+#[tauri::command]
+pub async fn save_view_design(
+    store: State<'_, ConnectionStore>,
+    sessions: State<'_, SessionManager>,
+    connection_id: String,
+    database: String,
+    original: Option<ViewDesign>,
+    edited: ViewDesign,
+    recreate: bool,
+) -> Result<ViewDesign, String> {
+    let (original, edited) = prepare_view(original, edited)?;
+    let pool = pool_for(&store, &sessions, &connection_id, Some(&database))?;
+    view_postgres::save_view_design(&pool, original.as_ref(), &edited, recreate).await
+}
+
+/// Runs an unsaved view definition read-only and returns its first rows.
+#[tauri::command]
+pub async fn preview_view_rows(
+    store: State<'_, ConnectionStore>,
+    sessions: State<'_, SessionManager>,
+    connection_id: String,
+    database: String,
+    definition: String,
+) -> Result<QueryResult, String> {
+    let pool = pool_for(&store, &sessions, &connection_id, Some(&database))?;
+    view_postgres::preview_rows(&pool, &definition).await
+}
+
+/// EXPLAIN (without ANALYZE) of an unsaved view definition.
+#[tauri::command]
+pub async fn explain_view(
+    store: State<'_, ConnectionStore>,
+    sessions: State<'_, SessionManager>,
+    connection_id: String,
+    database: String,
+    definition: String,
+) -> Result<Vec<String>, String> {
+    let pool = pool_for(&store, &sessions, &connection_id, Some(&database))?;
+    view_postgres::explain(&pool, &definition).await
 }

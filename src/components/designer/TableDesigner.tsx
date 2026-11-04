@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
-import type { ComponentType, FormEvent } from "react";
+import type { ComponentType } from "react";
 import { ArrowDown, ArrowUp, KeyRound, ListPlus, Plus, RotateCw, Save, Trash2 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import * as api from "../../lib/api";
 import { columnErrors, objectErrors, optionErrors, useTableDesigner } from "../../stores/tableDesigner";
 import type { Designer, ObjectKind } from "../../stores/tableDesigner";
-import { Modal } from "../Modal";
 import { SqlEditor } from "../SqlEditor";
 import { FieldsGrid } from "./FieldsGrid";
+import { NameDialog } from "./NameDialog";
 import { ChecksGrid, ExcludesGrid, ForeignKeysGrid, IndexesGrid, RulesGrid, TriggersGrid, UniquesGrid } from "./ObjectGrids";
 import { OptionsForm } from "./OptionsForm";
 
@@ -160,7 +160,17 @@ export function TableDesigner({ id }: { id: string }) {
       )}
       {subTab === "sql" && <SqlPreview designer={designer} />}
 
-      {designer.askingName && <TableNameDialog id={id} initial={designer.edited.name} />}
+      {designer.askingName && (
+        <NameDialog
+          noun="table"
+          initial={designer.edited.name}
+          onCancel={() => store.setAskingName(id, false)}
+          onSave={(name) => {
+            store.setAskingName(id, false);
+            void store.save(id, name);
+          }}
+        />
+      )}
     </section>
   );
 }
@@ -184,43 +194,4 @@ function SqlPreview({ designer }: { designer: Designer }) {
   }, [original, edited]);
 
   return <SqlEditor value={text} readOnly className="flex-1" />;
-}
-
-/** Asks for a new table's name on its first save, as Navicat does. */
-function TableNameDialog({ id, initial }: { id: string; initial: string }) {
-  const [name, setName] = useState(initial);
-  const { setAskingName, save } = useTableDesigner.getState();
-  const close = () => setAskingName(id, false);
-
-  const onSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    if (!name.trim()) return;
-    close();
-    void save(id, name.trim());
-  };
-
-  return (
-    <Modal title="Table Name" onClose={close}>
-      <form onSubmit={onSubmit}>
-        <input
-          className="input w-full"
-          data-autofocus
-          value={name}
-          placeholder="Enter a table name"
-          spellCheck={false}
-          autoCapitalize="off"
-          autoCorrect="off"
-          onChange={(e) => setName(e.target.value)}
-        />
-        <div className="modal-action">
-          <button type="button" className="btn" onClick={close}>
-            Cancel
-          </button>
-          <button type="submit" className="btn btn-primary" disabled={!name.trim()}>
-            Save
-          </button>
-        </div>
-      </form>
-    </Modal>
-  );
 }

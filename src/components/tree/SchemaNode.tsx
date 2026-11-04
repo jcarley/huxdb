@@ -4,6 +4,7 @@ import type { SchemaObjects } from "../../lib/types";
 import { useExplorer } from "../../stores/explorer";
 import type { ObjectGroup } from "../../stores/explorer";
 import { useTabs } from "../../stores/tabs";
+import type { DesignerKind } from "../../stores/tabs";
 import { useContextMenu } from "./ContextMenu";
 import { TreeNode } from "./TreeNode";
 import { useTreeNode } from "./useTreeNode";
@@ -75,12 +76,17 @@ interface GroupProps {
   names: string[];
 }
 
-/** "New Table" for the Tables group and its tables. */
-const newTableItem = (parent: SchemaProps) => ({
-  label: "New Table",
-  icon: Plus,
-  onClick: () => useTabs.getState().openTableDesigner(parent, null),
-});
+/** The designer a group's objects open in, with its menu noun; none for the other groups. */
+const DESIGNERS: Partial<Record<ObjectGroup, { kind: DesignerKind; noun: string }>> = {
+  tables: { kind: "table", noun: "Table" },
+  views: { kind: "view", noun: "View" },
+};
+
+/** "New Table" / "New View" for a group and its objects. */
+const newItem = (parent: SchemaProps, group: ObjectGroup) => {
+  const { kind, noun } = DESIGNERS[group]!;
+  return { label: `New ${noun}`, icon: Plus, onClick: () => useTabs.getState().openDesigner(kind, parent, null) };
+};
 
 function GroupNode({ parent, group, label, icon: Icon, names }: GroupProps) {
   const node = useTreeNode({ kind: "group", ...parent, group });
@@ -100,10 +106,10 @@ function GroupNode({ parent, group, label, icon: Icon, names }: GroupProps) {
         node.expand();
       }}
       onContextMenu={
-        group === "tables"
+        DESIGNERS[group]
           ? (e) => {
               node.select();
-              openMenu(e, [newTableItem(parent)]);
+              openMenu(e, [newItem(parent, group)]);
             }
           : undefined
       }
@@ -118,6 +124,7 @@ function GroupNode({ parent, group, label, icon: Icon, names }: GroupProps) {
 function ObjectNode({ parent, group, name, icon: Icon }: { parent: SchemaProps; group: ObjectGroup; name: string; icon: LucideIcon }) {
   const node = useTreeNode({ kind: "object", ...parent, group, name });
   const openMenu = useContextMenu((s) => s.open);
+  const designer = DESIGNERS[group];
 
   return (
     <TreeNode
@@ -127,12 +134,16 @@ function ObjectNode({ parent, group, name, icon: Icon }: { parent: SchemaProps; 
       selected={node.selected}
       onClick={node.select}
       onContextMenu={
-        group === "tables"
+        designer
           ? (e) => {
               node.select();
               openMenu(e, [
-                { label: "Design Table", icon: PencilRuler, onClick: () => useTabs.getState().openTableDesigner(parent, name) },
-                newTableItem(parent),
+                {
+                  label: `Design ${designer.noun}`,
+                  icon: PencilRuler,
+                  onClick: () => useTabs.getState().openDesigner(designer.kind, parent, name),
+                },
+                newItem(parent, group),
               ]);
             }
           : undefined

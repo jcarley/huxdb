@@ -34,6 +34,11 @@ pub fn run() {
             designer::list_trigger_functions,
             designer::preview_table_ddl,
             designer::save_table_design,
+            designer::load_view_design,
+            designer::preview_view_ddl,
+            designer::save_view_design,
+            designer::preview_view_rows,
+            designer::explain_view,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

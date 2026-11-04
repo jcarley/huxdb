@@ -9,7 +9,7 @@ use super::model::{
     RuleDesign, RuleEvent, TriggerEnabled, TriggerTiming, UniqueDesign,
 };
 
-fn err(e: sqlx::Error) -> String {
+pub(super) fn err(e: sqlx::Error) -> String {
     e.to_string()
 }
 
@@ -655,21 +655,26 @@ pub fn decode_typmod(data_type: &str, typmod: i32) -> (Option<i32>, Option<i32>)
 /// Runs the statements that turn `original` into `edited` (or create it) in one
 /// transaction, then reloads the table. On failure nothing is applied and the
 /// error names the statement that failed.
-pub async fn save_table_design(
-    pool: &PgPool,
-    original: Option<&TableDesign>,
-    edited: &TableDesign,
-) -> Result<TableDesign, String> {
-    let statements = generate_table_ddl(original, edited);
+/// Runs designer statements in one transaction. On failure nothing is applied
+/// and the error names the statement that failed.
+pub(super) async fn execute_all(pool: &PgPool, statements: &[String]) -> Result<(), String> {
     let mut tx = pool.begin().await.map_err(err)?;
-    for statement in &statements {
+    for statement in statements {
         if let Err(e) = sqlx::raw_sql(sqlx::AssertSqlSafe(statement.as_str())).execute(&mut *tx).await {
             // Dropping the transaction rolls it back; say so explicitly anyway.
             let _ = tx.rollback().await;
             return Err(format!("{}\n\nFailed statement:\n{statement}", err(e)));
         }
     }
-    tx.commit().await.map_err(err)?;
+    tx.commit().await.map_err(err)
+}
+
+pub async fn save_table_design(
+    pool: &PgPool,
+    original: Option<&TableDesign>,
+    edited: &TableDesign,
+) -> Result<TableDesign, String> {
+    execute_all(pool, &generate_table_ddl(original, edited)).await?;
     // An existing table keeps its name; the designer doesn't rename tables.
     let name = original.map_or(&edited.name, |o| &o.name);
     load_table_design(pool, &edited.schema, name).await
@@ -684,11 +689,11 @@ pub fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
-fn quote_literal(text: &str) -> String {
+pub(super) fn quote_literal(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))
 }
 
-fn qualified(schema: &str, name: &str) -> String {
+pub(super) fn qualified(schema: &str, name: &str) -> String {
     format!("{}.{}", quote_ident(schema), quote_ident(name))
 }
 
@@ -755,7 +760,7 @@ fn primary_key_clause(design: &TableDesign) -> Option<String> {
     Some(format!("{constraint}PRIMARY KEY ({})", names.join(", ")))
 }
 
-fn comment_sql(target: &str, comment: &Option<String>) -> String {
+pub(super) fn comment_sql(target: &str, comment: &Option<String>) -> String {
     let value = comment.as_deref().map_or("NULL".to_string(), quote_literal);
     format!("COMMENT ON {target} IS {value}")
 }

@@ -1,6 +1,7 @@
 import { Eye, PencilRuler, Plus, Trash2, Upload } from "lucide-react";
 import * as api from "../../lib/api";
 import type { ViewInfo } from "../../lib/types";
+import { useTabs } from "../../stores/tabs";
 import { ObjectListView } from "./ObjectListView";
 import type { ObjectColumn } from "./ObjectListView";
 import type { ObjectAction } from "./ObjectToolbar";
@@ -12,14 +13,18 @@ const COLUMNS: ObjectColumn<ViewInfo>[] = [
   { header: "Comment", className: "max-w-xs truncate", cell: (v) => v.comment, title: (v) => v.comment ?? undefined },
 ];
 
-// Navicat has no Import Wizard for views.
-const ACTIONS: ObjectAction[] = [
-  { icon: Eye, label: "Open View", needsSelection: true },
-  { icon: PencilRuler, label: "Design View", needsSelection: true },
-  { icon: Plus, label: "New View" },
-  { icon: Trash2, label: "Delete View", needsSelection: true },
-  { icon: Upload, label: "Export Wizard", needsSelection: true },
-];
+/** Toolbar actions; Design and New open the view designer, the rest are placeholders. Navicat has no Import Wizard for views. */
+const actions = ({ connectionId, database, schema, selectedName }: ViewsViewProps): ObjectAction[] => {
+  const ref = { connectionId, database, schema };
+  const { openViewDesigner } = useTabs.getState();
+  return [
+    { icon: Eye, label: "Open View", needsSelection: true },
+    { icon: PencilRuler, label: "Design View", needsSelection: true, onClick: () => selectedName && openViewDesigner(ref, selectedName) },
+    { icon: Plus, label: "New View", onClick: () => openViewDesigner(ref, null) },
+    { icon: Trash2, label: "Delete View", needsSelection: true },
+    { icon: Upload, label: "Export Wizard", needsSelection: true },
+  ];
+};
 
 interface ViewsViewProps {
   connectionId: string;
@@ -38,7 +43,7 @@ export function ViewsView(props: ViewsViewProps) {
       icon={Eye}
       load={api.listViews}
       columns={COLUMNS}
-      actions={ACTIONS}
+      actions={actions(props)}
       emptyText="No views"
     />
   );

@@ -3,7 +3,7 @@
 // Commands reject with a plain error string.
 
 import { invoke } from "@tauri-apps/api/core";
-import type { ConnectionConfig, QualifiedName, SchemaObjects, TableDesign, TableInfo, ViewInfo } from "./types";
+import type { ConnectionConfig, QualifiedName, QueryResult, SchemaObjects, TableDesign, TableInfo, ViewDesign, ViewInfo } from "./types";
 
 export const listConnections = () => invoke<ConnectionConfig[]>("list_connections");
 
@@ -62,5 +62,27 @@ export const previewTableDdl = (original: TableDesign | null, edited: TableDesig
 /** Creates or alters the table in one transaction; resolves to the table as reloaded. */
 export const saveTableDesign = (connectionId: string, database: string, original: TableDesign | null, edited: TableDesign) =>
   invoke<TableDesign>("save_table_design", { connectionId, database, original, edited });
+
+// View designer (`src-tauri/src/designer/mod.rs`).
+
+export const loadViewDesign = (connectionId: string, database: string, schema: string, view: string) =>
+  invoke<ViewDesign>("load_view_design", { connectionId, database, schema, view });
+
+export const previewViewDdl = (original: ViewDesign | null, edited: ViewDesign, recreate: boolean) =>
+  invoke<string[]>("preview_view_ddl", { original, edited, recreate });
+
+/** Rejects with a message starting with `RECREATE_MARKER` when only a drop and re-create can apply it. */
+export const saveViewDesign = (connectionId: string, database: string, original: ViewDesign | null, edited: ViewDesign, recreate: boolean) =>
+  invoke<ViewDesign>("save_view_design", { connectionId, database, original, edited, recreate });
+
+export const RECREATE_MARKER = "[recreate] ";
+
+/** Runs an unsaved definition read-only (30 s timeout) and returns its first rows. */
+export const previewViewRows = (connectionId: string, database: string, definition: string) =>
+  invoke<QueryResult>("preview_view_rows", { connectionId, database, definition });
+
+/** EXPLAIN (no ANALYZE) of an unsaved definition, one line per entry. */
+export const explainView = (connectionId: string, database: string, definition: string) =>
+  invoke<string[]>("explain_view", { connectionId, database, definition });
 
 export const errorMessage = (err: unknown) => (typeof err === "string" ? err : String(err));

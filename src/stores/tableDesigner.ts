@@ -334,12 +334,12 @@ export const useTableDesigner = create<TableDesignerState>((set, get) => {
           ...s.designers,
           [tab.id]: {
             tab,
-            status: tab.table === null ? "loaded" : "loading",
+            status: tab.name === null ? "loaded" : "loading",
             loadError: null,
             original: null,
             edited: design,
             baseline: design,
-            selectedRow: tab.table === null ? 0 : null,
+            selectedRow: tab.name === null ? 0 : null,
             selectedObjects: NO_SELECTION,
             saving: false,
             saveError: null,
@@ -348,13 +348,13 @@ export const useTableDesigner = create<TableDesignerState>((set, get) => {
           },
         },
       }));
-      if (tab.table !== null) void get().load(tab.id);
+      if (tab.name !== null) void get().load(tab.id);
     },
 
     load: async (id) => {
       const d = get().designers[id];
-      if (!d || d.tab.table === null) return;
-      const { connectionId, database, schema, table } = d.tab;
+      if (!d || d.tab.name === null) return;
+      const { connectionId, database, schema, name: table } = d.tab;
       patch(id, () => ({ status: "loading", loadError: null }));
       try {
         const design = await api.loadTableDesign(connectionId, database, schema, table);
@@ -500,10 +500,10 @@ export const useTableDesigner = create<TableDesignerState>((set, get) => {
           selectedRow: cur.selectedRow === null ? null : Math.min(cur.selectedRow, saved.columns.length - 1),
           // Saved objects come back sorted by name, so row positions change.
           selectedObjects: NO_SELECTION,
-          tab: { ...cur.tab, table: saved.name },
+          tab: { ...cur.tab, name: saved.name },
         }));
         const tabs = useTabs.getState();
-        tabs.setTable(id, saved.name);
+        tabs.setName(id, saved.name);
         tabs.schemaChanged(d.tab);
         invalidateCatalog(connectionId, database, schema);
         useExplorer.getState().reload({ kind: "schema", connectionId, database, schema });

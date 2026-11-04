@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTableDesigner } from "../stores/tableDesigner";
+import { useViewDesigner } from "../stores/viewDesigner";
 import { tabTitle, useTabs } from "../stores/tabs";
 import { Modal } from "./Modal";
 
@@ -20,9 +21,9 @@ function ConfirmClose({ id }: { id: string }) {
   if (!tab) return null;
 
   const onSave = async () => {
-    const designer = useTableDesigner.getState();
+    const designer = tab.kind === "table" ? useTableDesigner.getState() : useViewDesigner.getState();
     if (designer.designers[id]?.original === null) {
-      // A new table needs its name first; the designer asks, and the tab stays open.
+      // A new table or view needs its name first; the designer asks, and the tab stays open.
       cancelClose();
       designer.requestSave(id);
       return;
