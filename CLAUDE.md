@@ -20,6 +20,7 @@ Rust has unit tests; the frontend has no test framework, so `npm run build` (tsc
 
 - **Start each new feature on its own branch** named `feature/<name>` (e.g. `feature/query-editor`), created from `main` before any changes are made.
 - **Don't commit.** The developer makes all commits so that every change is reviewed by a human. Leave the finished work uncommitted on the feature branch.
+- **Plans and research live in `docs/`:** `docs/research/` for findings, `docs/recommendations/` for backlogs, `docs/phases/<feature>/` for iterations. See `docs/README.md`.
 
 ## Commands
 
