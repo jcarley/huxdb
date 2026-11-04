@@ -8,7 +8,10 @@ use sqlx::postgres::PgPoolOptions;
 use crate::connections::model::ConnectionConfig;
 use crate::connections::postgres::{CONNECT_TIMEOUT, connect_options};
 
-const MAX_CONNECTIONS: u32 = 2;
+/// Each data editor tab with an open transaction keeps one connection, and
+/// Stop needs a spare to send its cancel request, so leave room beyond the
+/// tree's and designers' short queries.
+const MAX_CONNECTIONS: u32 = 8;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Open connection pools, one per (saved connection id, database). PostgreSQL

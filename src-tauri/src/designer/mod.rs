@@ -7,6 +7,8 @@ mod postgres;
 mod view;
 mod view_postgres;
 
+pub(crate) use postgres::{qualified, quote_ident};
+
 use model::TableDesign;
 use view::ViewDesign;
 use view_postgres::QueryResult;

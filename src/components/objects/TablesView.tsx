@@ -14,12 +14,12 @@ const COLUMNS: ObjectColumn<TableInfo>[] = [
   { header: "Comment", className: "max-w-xs truncate", cell: (t) => t.comment, title: (t) => t.comment ?? undefined },
 ];
 
-/** Toolbar actions; Design and New open the table designer, the rest are placeholders. */
+/** Toolbar actions; Open opens the data editor, Design and New the table designer, the rest are placeholders. */
 const actions = ({ connectionId, database, schema, selectedName }: TablesViewProps): ObjectAction[] => {
   const ref = { connectionId, database, schema };
-  const { openTableDesigner } = useTabs.getState();
+  const { openDataEditor, openTableDesigner } = useTabs.getState();
   return [
-  { icon: Table, label: "Open Table", needsSelection: true },
+  { icon: Table, label: "Open Table", needsSelection: true, onClick: () => selectedName && openDataEditor(ref, selectedName) },
   { icon: PencilRuler, label: "Design Table", needsSelection: true, onClick: () => selectedName && openTableDesigner(ref, selectedName) },
   { icon: Plus, label: "New Table", onClick: () => openTableDesigner(ref, null) },
   { icon: Trash2, label: "Delete Table", needsSelection: true },
@@ -46,6 +46,7 @@ export function TablesView(props: TablesViewProps) {
       load={api.listTables}
       columns={COLUMNS}
       actions={actions(props)}
+      onOpen={(name) => useTabs.getState().openDataEditor(props, name)}
       emptyText="No tables"
     />
   );

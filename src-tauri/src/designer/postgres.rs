@@ -693,7 +693,7 @@ pub(super) fn quote_literal(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))
 }
 
-pub(super) fn qualified(schema: &str, name: &str) -> String {
+pub fn qualified(schema: &str, name: &str) -> String {
     format!("{}.{}", quote_ident(schema), quote_ident(name))
 }
 

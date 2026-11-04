@@ -390,3 +390,56 @@ export interface QueryResult {
   /** More rows exist than were returned. */
   truncated: boolean;
 }
+
+// Mirrors src-tauri/src/editor/model.rs and mod.rs
+
+/** The table a data tab shows. */
+export interface DataTarget {
+  connectionId: string;
+  database: string;
+  schema: string;
+  table: string;
+}
+
+export interface DataColumn {
+  name: string;
+  /** `format_type()` output, e.g. `numeric(10,2)`. */
+  typeName: string;
+  nullable: boolean;
+  /** Has a DEFAULT (or is an identity column), so a new row can leave it out. */
+  hasDefault: boolean;
+  /** Why the column can't be edited, if so. */
+  readOnly: string | null;
+}
+
+export interface DataSource {
+  columns: DataColumn[];
+  /** Primary key column names in key order; empty when there is none. */
+  primaryKey: string[];
+  /** Why the whole table is read-only (no primary key), if so. */
+  readOnly: string | null;
+}
+
+/** A page of rows, every value as text (null for NULL), in column order. */
+export interface DataPage {
+  source: DataSource;
+  rows: (string | null)[][];
+}
+
+export interface CellValue {
+  column: string;
+  value: string | null;
+}
+
+/** Changed cells of an existing row, found by its original primary key values. */
+export interface RowUpdate {
+  key: string[];
+  values: CellValue[];
+}
+
+export interface EditBatch {
+  deletes: string[][];
+  updates: RowUpdate[];
+  /** Each new row lists only its edited columns; the rest get their defaults. */
+  inserts: CellValue[][];
+}

@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { ListTree, Play, RotateCcw, RotateCw, Save, WandSparkles, X } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
 import * as api from "../../lib/api";
 import { useRoles } from "../../lib/catalog";
 import type { CheckOption } from "../../lib/types";
@@ -9,6 +8,7 @@ import { useViewDesigner } from "../../stores/viewDesigner";
 import type { ResultPanel, ViewDesigner as Designer } from "../../stores/viewDesigner";
 import { SqlEditor } from "../SqlEditor";
 import { NameDialog } from "./NameDialog";
+import { ToolButton } from "../ToolButton";
 
 type SubTab = "definition" | "advanced" | "comment" | "sql";
 
@@ -18,15 +18,6 @@ const SUB_TABS: { tab: SubTab; label: string }[] = [
   { tab: "comment", label: "Comment" },
   { tab: "sql", label: "SQL Preview" },
 ];
-
-function ToolButton({ icon: Icon, label, disabled, onClick }: { icon: LucideIcon; label: string; disabled?: boolean; onClick: () => void }) {
-  return (
-    <button type="button" className="btn btn-ghost btn-sm font-normal" disabled={disabled} onClick={onClick}>
-      <Icon className="size-4 text-primary" strokeWidth={1.75} />
-      {label}
-    </button>
-  );
-}
 
 /** Navicat-style view designer for one tab: create a view, or edit an existing one. */
 export function ViewDesigner({ id }: { id: string }) {

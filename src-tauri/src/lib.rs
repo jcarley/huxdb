@@ -1,8 +1,10 @@
 mod connections;
 mod designer;
+mod editor;
 mod explorer;
 
 use connections::store::ConnectionStore;
+use editor::EditorSessions;
 use explorer::sessions::SessionManager;
 use tauri::Manager;
 
@@ -14,6 +16,7 @@ pub fn run() {
             let path = app.path().app_config_dir()?.join("connections.json");
             app.manage(ConnectionStore::load(path));
             app.manage(SessionManager::default());
+            app.manage(EditorSessions::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -39,6 +42,13 @@ pub fn run() {
             designer::save_view_design,
             designer::preview_view_rows,
             designer::explain_view,
+            editor::session_begin,
+            editor::session_end,
+            editor::session_cancel,
+            editor::session_close,
+            editor::data_fetch_page,
+            editor::data_count,
+            editor::data_apply,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

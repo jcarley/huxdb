@@ -35,6 +35,8 @@ interface ObjectListViewProps<T extends { name: string }> {
   columns: ObjectColumn<T>[];
   actions: ObjectAction[];
   emptyText: string;
+  /** Double-clicking a row opens its object. */
+  onOpen?: (name: string) => void;
 }
 
 /** Navicat-style list of one kind of schema object, with that kind's actions above it. */
@@ -49,6 +51,7 @@ export function ObjectListView<T extends { name: string }>({
   columns,
   actions,
   emptyText,
+  onOpen,
 }: ObjectListViewProps<T>) {
   const [list, setList] = useState<ListState<T>>({ status: "loading" });
   const [reloadToken, setReloadToken] = useState(0);
@@ -111,6 +114,7 @@ export function ObjectListView<T extends { name: string }>({
                   aria-selected={row.name === selectedName}
                   className={`cursor-default ${row.name === selectedName ? "bg-primary/15" : "hover:bg-base-300/60"}`}
                   onClick={() => selectRow(row.name)}
+                  onDoubleClick={onOpen && (() => onOpen(row.name))}
                 >
                   <td className="font-medium">
                     <span className="flex items-center gap-1.5">

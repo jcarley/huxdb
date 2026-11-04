@@ -1,14 +1,16 @@
-import { Eye, PencilRuler, X } from "lucide-react";
+import { Eye, PencilRuler, Table, X } from "lucide-react";
 import type { ReactNode } from "react";
+import { dataDirty, useDataEditor } from "../stores/dataEditor";
 import { designerDirty, useTableDesigner } from "../stores/tableDesigner";
 import { tabTitle, useTabs } from "../stores/tabs";
 import type { DesignerTab } from "../stores/tabs";
 import { DetailsPane } from "./DetailsPane";
+import { DataEditor } from "./data/DataEditor";
 import { viewDirty, useViewDesigner } from "../stores/viewDesigner";
 import { TableDesigner } from "./designer/TableDesigner";
 import { ViewDesigner } from "./designer/ViewDesigner";
 
-/** The main pane: a permanent Objects tab plus one closable tab per open designer. */
+/** The main pane: a permanent Objects tab plus one closable tab per open designer or data editor. */
 export function MainArea() {
   const tabs = useTabs((s) => s.tabs);
   const activeId = useTabs((s) => s.activeId);
@@ -30,7 +32,7 @@ export function MainArea() {
       </div>
       {tabs.map((tab) => (
         <div key={tab.id} className={`min-h-0 flex-1 ${activeId === tab.id ? "flex" : "hidden"}`}>
-          {tab.kind === "table" ? <TableDesigner id={tab.id} /> : <ViewDesigner id={tab.id} />}
+          {tab.kind === "table" ? <TableDesigner id={tab.id} /> : tab.kind === "view" ? <ViewDesigner id={tab.id} /> : <DataEditor id={tab.id} />}
         </div>
       ))}
     </main>
@@ -54,11 +56,14 @@ function TabButton({ active, onClick, onAuxClick, title, children }: { active: b
 }
 
 function DesignerTabButton({ tab, active }: { tab: DesignerTab; active: boolean }) {
-  // Both hooks run on every render; only the tab's own kind counts.
-  const tableDirty = useTableDesigner((s) => designerDirty(s.designers[tab.id]));
-  const viewIsDirty = useViewDesigner((s) => viewDirty(s.designers[tab.id]));
-  const dirty = tab.kind === "table" ? tableDirty : viewIsDirty;
-  const Icon = tab.kind === "table" ? PencilRuler : Eye;
+  // Every hook runs on every render; only the tab's own kind counts.
+  const dirtyByKind = {
+    table: useTableDesigner((s) => designerDirty(s.designers[tab.id])),
+    view: useViewDesigner((s) => viewDirty(s.designers[tab.id])),
+    data: useDataEditor((s) => dataDirty(s.editors[tab.id])),
+  };
+  const dirty = dirtyByKind[tab.kind];
+  const Icon = { table: PencilRuler, view: Eye, data: Table }[tab.kind];
   const { activate, requestClose } = useTabs.getState();
   const title = tabTitle(tab);
 

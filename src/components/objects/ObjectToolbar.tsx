@@ -1,21 +1,6 @@
 import { RefreshCw } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-
-interface ToolButtonProps {
-  icon: LucideIcon;
-  label: string;
-  disabled?: boolean;
-  onClick?: () => void;
-}
-
-function ToolButton({ icon: Icon, label, disabled, onClick }: ToolButtonProps) {
-  return (
-    <button type="button" className="btn btn-ghost btn-sm font-normal" disabled={disabled} onClick={onClick}>
-      <Icon className="size-4 text-primary" strokeWidth={1.75} />
-      {label}
-    </button>
-  );
-}
+import { ToolButton } from "../ToolButton";
 
 /** A button in an object list's toolbar. */
 export interface ObjectAction {

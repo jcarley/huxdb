@@ -125,6 +125,8 @@ function ObjectNode({ parent, group, name, icon: Icon }: { parent: SchemaProps; 
   const node = useTreeNode({ kind: "object", ...parent, group, name });
   const openMenu = useContextMenu((s) => s.open);
   const designer = DESIGNERS[group];
+  const isTable = group === "tables";
+  const openData = () => useTabs.getState().openDataEditor(parent, name);
 
   return (
     <TreeNode
@@ -133,11 +135,13 @@ function ObjectNode({ parent, group, name, icon: Icon }: { parent: SchemaProps; 
       label={name}
       selected={node.selected}
       onClick={node.select}
+      onDoubleClick={isTable ? openData : undefined}
       onContextMenu={
         designer
           ? (e) => {
               node.select();
               openMenu(e, [
+                ...(isTable ? [{ label: "Open Table", icon: Table, onClick: openData }] : []),
                 {
                   label: `Design ${designer.noun}`,
                   icon: PencilRuler,

@@ -1,9 +1,9 @@
-// Typed wrappers around the Tauri commands in `src-tauri/src/connections/mod.rs` and
-// `src-tauri/src/explorer/mod.rs` and `src-tauri/src/designer/mod.rs`.
+// Typed wrappers around the Tauri commands in `src-tauri/src/connections/mod.rs`,
+// `src-tauri/src/explorer/mod.rs`, `src-tauri/src/designer/mod.rs` and `src-tauri/src/editor/mod.rs`.
 // Commands reject with a plain error string.
 
 import { invoke } from "@tauri-apps/api/core";
-import type { ConnectionConfig, QualifiedName, QueryResult, SchemaObjects, TableDesign, TableInfo, ViewDesign, ViewInfo } from "./types";
+import type { ConnectionConfig, DataPage, DataTarget, EditBatch, QualifiedName, QueryResult, SchemaObjects, TableDesign, TableInfo, ViewDesign, ViewInfo } from "./types";
 
 export const listConnections = () => invoke<ConnectionConfig[]>("list_connections");
 
@@ -84,5 +84,36 @@ export const previewViewRows = (connectionId: string, database: string, definiti
 /** EXPLAIN (no ANALYZE) of an unsaved definition, one line per entry. */
 export const explainView = (connectionId: string, database: string, definition: string) =>
   invoke<string[]>("explain_view", { connectionId, database, definition });
+
+// Editor sessions (a tab's transaction and Stop) --------------------------------
+
+/** Begin Transaction: the tab's later data commands run in it until `sessionEnd`. */
+export const sessionBegin = (tabId: string, connectionId: string, database: string) =>
+  invoke<void>("session_begin", { tabId, connectionId, database });
+
+/** Commits or rolls back the tab's transaction. */
+export const sessionEnd = (tabId: string, commit: boolean) => invoke<void>("session_end", { tabId, commit });
+
+/** Stop: cancels what the tab is running; that call rejects with `CANCELLED`. */
+export const sessionCancel = (tabId: string, connectionId: string, database: string) =>
+  invoke<void>("session_cancel", { tabId, connectionId, database });
+
+/** The tab closed: rolls back its transaction, if any. */
+export const sessionClose = (tabId: string) => invoke<void>("session_close", { tabId });
+
+/** The error of a statement stopped with Stop. */
+export const CANCELLED = "Cancelled";
+
+// Data editor ----------------------------------------------------------------
+
+export const fetchDataPage = (tabId: string, target: DataTarget, offset: number, limit: number) =>
+  invoke<DataPage>("data_fetch_page", { tabId, target, offset, limit });
+
+/** Exact row count; null when counting took too long. */
+export const countRows = (tabId: string, target: DataTarget) => invoke<number | null>("data_count", { tabId, target });
+
+/** Applies pending edits all or nothing; resolves to the number of rows changed. */
+export const applyEdits = (tabId: string, target: DataTarget, batch: EditBatch) =>
+  invoke<number>("data_apply", { tabId, target, batch });
 
 export const errorMessage = (err: unknown) => (typeof err === "string" ? err : String(err));

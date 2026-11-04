@@ -1,7 +1,9 @@
-// Main-pane tabs: the permanent Objects tab (activeId null) plus one tab per open designer.
+// Main-pane tabs: the permanent Objects tab (activeId null) plus one tab per open
+// designer or data editor.
 
 import { create } from "zustand";
 import { nodeKey } from "./explorer";
+import { isDataDirty, useDataEditor } from "./dataEditor";
 import { isDirty as isTableDirty, useTableDesigner } from "./tableDesigner";
 import { isViewDirty, useViewDesigner } from "./viewDesigner";
 
@@ -12,12 +14,13 @@ export interface SchemaRef {
   schema: string;
 }
 
-export type DesignerKind = "table" | "view";
+/** A table or view designer, or a table's data editor. */
+export type DesignerKind = "table" | "view" | "data";
 
 export interface DesignerTab extends SchemaRef {
   id: string;
   kind: DesignerKind;
-  /** Table or view being designed; null until a new one is first saved. */
+  /** Table or view being designed (or edited); null until a new one is first saved. */
   name: string | null;
 }
 
@@ -36,6 +39,7 @@ interface TabsState {
   openDesigner: (kind: DesignerKind, ref: SchemaRef, name: string | null) => void;
   openTableDesigner: (ref: SchemaRef, table: string | null) => void;
   openViewDesigner: (ref: SchemaRef, view: string | null) => void;
+  openDataEditor: (ref: SchemaRef, table: string) => void;
   activate: (id: string | null) => void;
   /** Closes a clean tab; a dirty one prompts first. */
   requestClose: (id: string) => void;
@@ -53,11 +57,34 @@ interface TabsState {
 const schemaKey = ({ connectionId, database, schema }: SchemaRef) =>
   nodeKey({ kind: "schema", connectionId, database, schema });
 
-export const tabTitle = (tab: DesignerTab) =>
-  `${tab.name ?? "Untitled"} @${tab.database}.${tab.schema} (${tab.kind === "table" ? "Table" : "View"})`;
+const KIND_LABELS: Record<DesignerKind, string> = { table: "Table", view: "View", data: "Data" };
 
-/** Whether a tab's designer has unsaved edits, asking the store for its kind. */
-export const isTabDirty = (tab: DesignerTab) => (tab.kind === "table" ? isTableDirty(tab.id) : isViewDirty(tab.id));
+export const tabTitle = (tab: DesignerTab) =>
+  `${tab.name ?? "Untitled"} @${tab.database}.${tab.schema} (${KIND_LABELS[tab.kind]})`;
+
+/** Whether a tab has unsaved edits (or an open transaction), asking the store for its kind. */
+export const isTabDirty = (tab: DesignerTab) => {
+  switch (tab.kind) {
+    case "table":
+      return isTableDirty(tab.id);
+    case "view":
+      return isViewDirty(tab.id);
+    case "data":
+      return isDataDirty(tab.id);
+  }
+};
+
+/** The store holding a kind's per-tab state. */
+const storeFor = (kind: DesignerKind): { open: (tab: DesignerTab) => void; dispose: (id: string) => void } => {
+  switch (kind) {
+    case "table":
+      return useTableDesigner.getState();
+    case "view":
+      return useViewDesigner.getState();
+    case "data":
+      return useDataEditor.getState();
+  }
+};
 
 export const hasUnsavedTabs = () => useTabs.getState().tabs.some(isTabDirty);
 
@@ -81,13 +108,13 @@ export const useTabs = create<TabsState>((set, get) => ({
       return;
     }
     const tab: DesignerTab = { id: crypto.randomUUID(), kind, connectionId, database, schema, name };
-    if (kind === "table") useTableDesigner.getState().open(tab);
-    else useViewDesigner.getState().open(tab);
+    storeFor(kind).open(tab);
     set((s) => ({ tabs: [...s.tabs, tab], activeId: tab.id }));
   },
 
   openTableDesigner: (ref, table) => get().openDesigner("table", ref, table),
   openViewDesigner: (ref, view) => get().openDesigner("view", ref, view),
+  openDataEditor: (ref, table) => get().openDesigner("data", ref, table),
 
   activate: (id) => set({ activeId: id }),
 
@@ -100,8 +127,8 @@ export const useTabs = create<TabsState>((set, get) => ({
   cancelClose: () => set({ pendingClose: null }),
 
   close: (id) => {
-    if (get().tabs.find((t) => t.id === id)?.kind === "view") useViewDesigner.getState().dispose(id);
-    else useTableDesigner.getState().dispose(id);
+    const tab = get().tabs.find((t) => t.id === id);
+    if (tab) storeFor(tab.kind).dispose(id);
     set((s) => {
       const index = s.tabs.findIndex((t) => t.id === id);
       const tabs = s.tabs.filter((t) => t.id !== id);

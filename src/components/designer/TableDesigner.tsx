@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ComponentType } from "react";
 import { ArrowDown, ArrowUp, KeyRound, ListPlus, Plus, RotateCw, Save, Trash2 } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
 import * as api from "../../lib/api";
 import { columnErrors, objectErrors, optionErrors, useTableDesigner } from "../../stores/tableDesigner";
 import type { Designer, ObjectKind } from "../../stores/tableDesigner";
@@ -10,6 +9,7 @@ import { FieldsGrid } from "./FieldsGrid";
 import { NameDialog } from "./NameDialog";
 import { ChecksGrid, ExcludesGrid, ForeignKeysGrid, IndexesGrid, RulesGrid, TriggersGrid, UniquesGrid } from "./ObjectGrids";
 import { OptionsForm } from "./OptionsForm";
+import { ToolButton } from "../ToolButton";
 
 type DesignerTabName = "fields" | ObjectKind | "options" | "comment" | "sql";
 
@@ -58,15 +58,6 @@ function tabHasErrors(designer: Designer, tab: DesignerTabName): boolean {
   if (isObjectTab(tab)) return edited[tab].some((_, row) => Object.keys(objectErrors(edited, tab, row)).length > 0);
   if (tab === "options") return Object.keys(optionErrors(edited)).length > 0;
   return false;
-}
-
-function ToolButton({ icon: Icon, label, disabled, onClick }: { icon: LucideIcon; label: string; disabled?: boolean; onClick: () => void }) {
-  return (
-    <button type="button" className="btn btn-ghost btn-sm font-normal" disabled={disabled} onClick={onClick}>
-      <Icon className="size-4 text-primary" strokeWidth={1.75} />
-      {label}
-    </button>
-  );
 }
 
 /** Navicat-style table designer for one tab: create a table, or alter an existing one. */
