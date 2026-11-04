@@ -16,13 +16,17 @@ use crate::designer::{qualified, quote_ident};
 /// Row count queries give up after this long; the pager then shows no total.
 const COUNT_TIMEOUT: &str = "5s";
 
+/// Filtered pages give up after this long. Unfiltered ones have no limit, so
+/// Last works on a large table.
+const PAGE_TIMEOUT: &str = if cfg!(test) { "2s" } else { "60s" };
+
 // ---------------------------------------------------------------------------
 // Reading
 // ---------------------------------------------------------------------------
 
 /// Columns of the columns query: name, type, nullable, has default, read-only
-/// reason, comparable.
-type ColumnRow = (String, String, bool, bool, Option<String>, bool);
+/// reason, comparable, type without its modifier, text-like.
+type ColumnRow = (String, String, bool, bool, Option<String>, bool, String, bool);
 
 /// Loads the table's columns and primary key. Needs PostgreSQL 12+ (`attgenerated`).
 pub async fn load_source(conn: &mut PgConnection, schema: &str, table: &str) -> Result<DataSource, String> {
@@ -61,7 +65,12 @@ pub async fn load_source(conn: &mut PgConnection, schema: &str, table: &str) -> 
                                         END
                          OR EXISTS (SELECT FROM pg_cast c
                                     WHERE c.castsource = b.oid AND c.casttarget = i.oid
-                                      AND c.castmethod = 'b' AND c.castcontext = 'i')))
+                                      AND c.castmethod = 'b' AND c.castcontext = 'i'))),
+                -- The base type, as a domain's modifier would cut a value and its
+                -- CHECK would reject one. -1, not NULL: with NULL, char(3) comes
+                -- back as `character`, which means char(1).
+                format_type(b.oid, -1),
+                b.typcategory = 'S'
          FROM pg_attribute a
          CROSS JOIN LATERAL (
            WITH RECURSIVE base AS (
@@ -96,13 +105,15 @@ pub async fn load_source(conn: &mut PgConnection, schema: &str, table: &str) -> 
         .then(|| "This table has no primary key, so its rows can't be told apart for editing.".to_string());
     let columns = columns
         .into_iter()
-        .map(|(name, type_name, nullable, has_default, read_only, comparable)| DataColumn {
+        .map(|(name, type_name, nullable, has_default, read_only, comparable, filter_type, text_like)| DataColumn {
             name,
             type_name,
             nullable,
             has_default,
             read_only,
             comparable,
+            filter_type,
+            text_like,
         })
         .collect();
     Ok(DataSource { columns, primary_key, read_only })
@@ -128,40 +139,137 @@ fn find_column<'a>(source: &'a DataSource, name: &str) -> Result<&'a DataColumn,
     source.columns.iter().find(|c| c.name == name).ok_or_else(|| format!("Column \"{name}\" no longer exists."))
 }
 
+/// The filter without its disabled nodes and the groups they leave empty, so
+/// that a group of disabled conditions isn't `FALSE`. `None` if nothing is left.
+fn prune(node: &FilterNode) -> Option<FilterNode> {
+    match node {
+        FilterNode::Group { disabled: true, .. } | FilterNode::Condition { disabled: true, .. } | FilterNode::Custom { disabled: true, .. } => None,
+        FilterNode::Group { op, children, negated, disabled } => {
+            let children: Vec<_> = children.iter().filter_map(prune).collect();
+            (!children.is_empty()).then_some(FilterNode::Group { op: *op, children, negated: *negated, disabled: *disabled })
+        }
+        other => Some(other.clone()),
+    }
+}
+
+/// Whether the spec narrows the rows at all.
+fn filtered(spec: &DataSpec) -> bool {
+    spec.filter.as_ref().and_then(prune).is_some() || typed(&spec.where_sql).is_some()
+}
+
+/// A LIKE pattern matching `value` literally, with `%` on the given sides.
+fn like_pattern(value: &str, before: bool, after: bool) -> String {
+    let mut pattern = String::with_capacity(value.len() + 2);
+    if before {
+        pattern.push('%');
+    }
+    for c in value.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            pattern.push('\\');
+        }
+        pattern.push(c);
+    }
+    if after {
+        pattern.push('%');
+    }
+    pattern
+}
+
+fn parenthesized(negated: bool, sql: String) -> String {
+    if negated { format!("NOT ({sql})") } else { format!("({sql})") }
+}
+
+/// A pruned filter as SQL, every value bound.
 fn filter_sql(node: &FilterNode, source: &DataSource, binds: &mut Vec<Option<String>>) -> Result<String, String> {
     match node {
-        FilterNode::Group { op, children } => {
-            let (joiner, empty) = match op {
-                GroupOp::And => (" AND ", "TRUE"),
-                GroupOp::Or => (" OR ", "FALSE"),
+        FilterNode::Group { op, children, negated, .. } => {
+            let joiner = match op {
+                GroupOp::And => " AND ",
+                GroupOp::Or => " OR ",
             };
-            if children.is_empty() {
-                return Ok(empty.to_string());
-            }
             let terms = children.iter().map(|c| filter_sql(c, source, binds)).collect::<Result<Vec<_>, _>>()?;
-            Ok(format!("({})", terms.join(joiner)))
+            Ok(parenthesized(*negated, terms.join(joiner)))
         }
-        FilterNode::Condition { column, op, value } => {
-            let name = quote_ident(&find_column(source, column)?.name);
-            let operator = match op {
-                FilterOp::IsNull => return Ok(format!("{name} IS NULL")),
-                FilterOp::IsNotNull => return Ok(format!("{name} IS NOT NULL")),
-                FilterOp::Eq => "=",
-                FilterOp::Ne => "<>",
-            };
-            let c = comparable_column(source, column)?;
-            let value = value.clone().ok_or_else(|| format!("The filter on column \"{column}\" has no value."))?;
-            Ok(format!("{name} {operator} {}", placeholder(binds, Some(value), &c.type_name)))
+        FilterNode::Condition { column, op, value, values, negated, .. } => {
+            let sql = condition_sql(column, *op, value.as_deref(), values, source, binds)?;
+            Ok(if *negated { parenthesized(true, sql) } else { sql })
+        }
+        FilterNode::Custom { sql, negated, .. } => {
+            let text = typed(&Some(sql.clone())).ok_or("A custom filter condition is empty.")?;
+            Ok(parenthesized(*negated, text))
         }
     }
+}
+
+fn condition_sql(
+    column: &str,
+    op: FilterOp,
+    value: Option<&str>,
+    values: &[String],
+    source: &DataSource,
+    binds: &mut Vec<Option<String>>,
+) -> Result<String, String> {
+    let name = quote_ident(&find_column(source, column)?.name);
+    let required = || value.ok_or_else(|| format!("The filter on column \"{column}\" has no value."));
+    let (operator, before, after) = match op {
+        FilterOp::IsNull => return Ok(format!("{name} IS NULL")),
+        FilterOp::IsNotNull => return Ok(format!("{name} IS NOT NULL")),
+        FilterOp::IsEmpty => {
+            let c = find_column(source, column)?;
+            if !c.text_like {
+                return Err(format!("Column \"{column}\" has type {}, which isn't text, so it can't be empty.", c.type_name));
+            }
+            return Ok(format!("{name} = ''"));
+        }
+        FilterOp::Contains => ("ILIKE", true, true),
+        FilterOp::BeginsWith => ("ILIKE", false, true),
+        FilterOp::EndsWith => ("ILIKE", true, false),
+        FilterOp::Between => {
+            let c = comparable_column(source, column)?;
+            let [low, high] = values else {
+                return Err(format!("The filter on column \"{column}\" needs two values."));
+            };
+            if low.is_empty() || high.is_empty() {
+                return Err(format!("The filter on column \"{column}\" needs two values."));
+            }
+            let low = placeholder(binds, Some(low.clone()), &c.filter_type);
+            let high = placeholder(binds, Some(high.clone()), &c.filter_type);
+            return Ok(format!("{name} BETWEEN {low} AND {high}"));
+        }
+        FilterOp::In => {
+            let c = comparable_column(source, column)?;
+            // The UI's list has a line per item, so blank lines mean nothing.
+            let items: Vec<_> = values.iter().filter(|v| !v.is_empty()).map(|v| placeholder(binds, Some(v.clone()), &c.filter_type)).collect();
+            if items.is_empty() {
+                return Err(format!("The filter on column \"{column}\" has no values."));
+            }
+            return Ok(format!("{name} IN ({})", items.join(", ")));
+        }
+        FilterOp::Eq | FilterOp::Ne | FilterOp::Lt | FilterOp::Le | FilterOp::Gt | FilterOp::Ge => {
+            let operator = match op {
+                FilterOp::Eq => "=",
+                FilterOp::Ne => "<>",
+                FilterOp::Lt => "<",
+                FilterOp::Le => "<=",
+                FilterOp::Gt => ">",
+                _ => ">=",
+            };
+            let c = comparable_column(source, column)?;
+            let value = required()?.to_string();
+            return Ok(format!("{name} {operator} {}", placeholder(binds, Some(value), &c.filter_type)));
+        }
+    };
+    // Text matching compares what the grid shows, whatever the column's type.
+    let pattern = like_pattern(required()?, before, after);
+    Ok(format!("{name}::text {operator} {}", placeholder(binds, Some(pattern), "text")))
 }
 
 /// The spec's ` WHERE …`, or nothing. Parentheses keep the typed part one
 /// condition next to the structured filter.
 fn where_clause(source: &DataSource, spec: &DataSpec, binds: &mut Vec<Option<String>>) -> Result<String, String> {
     let mut terms = Vec::new();
-    if let Some(filter) = &spec.filter {
-        terms.push(filter_sql(filter, source, binds)?);
+    if let Some(filter) = spec.filter.as_ref().and_then(prune) {
+        terms.push(filter_sql(&filter, source, binds)?);
     }
     if let Some(text) = typed(&spec.where_sql) {
         terms.push(format!("({text})"));
@@ -234,12 +342,22 @@ pub async fn fetch_page(lease: &mut Lease<'_>, schema: &str, table: &str, spec: 
 async fn read_page(conn: &mut PgConnection, schema: &str, table: &str, spec: &DataSpec, offset: u64, limit: u64) -> Result<DataPage, String> {
     let source = load_source(conn, schema, table).await?;
     let (sql, binds) = select_page_sql(schema, table, &source, spec, offset, limit)?;
+    let limited = filtered(spec);
+    if limited {
+        set_timeout(conn, PAGE_TIMEOUT).await?;
+    }
     // Not persistent: nearly every page and filter is a different statement.
     let mut query = sqlx::query(sqlx::AssertSqlSafe(sql)).persistent(false);
     for value in binds {
         query = query.bind(value);
     }
-    let fetched = query.fetch_all(&mut *conn).await.map_err(err)?;
+    let fetched = query.fetch_all(&mut *conn).await.map_err(|e| {
+        if limited && is_timeout(&e) {
+            format!("The filter took longer than {PAGE_TIMEOUT}, so it was stopped. A narrower filter, or one on an indexed column, may be faster.")
+        } else {
+            err(e)
+        }
+    })?;
     let width = source.columns.len();
     let rows = fetched
         .iter()
@@ -263,8 +381,7 @@ pub async fn count_rows(lease: &mut Lease<'_>, schema: &str, table: &str, spec: 
 async fn count_with_timeout(conn: &mut PgConnection, schema: &str, table: &str, spec: &DataSpec) -> Result<Option<i64>, String> {
     let source = load_source(conn, schema, table).await?;
     let (sql, binds) = count_sql(schema, table, &source, spec)?;
-    let timeout = format!("SET LOCAL statement_timeout = '{COUNT_TIMEOUT}'");
-    sqlx::raw_sql(sqlx::AssertSqlSafe(timeout)).execute(&mut *conn).await.map_err(err)?;
+    set_timeout(conn, COUNT_TIMEOUT).await?;
     let mut query = sqlx::query_scalar(sqlx::AssertSqlSafe(sql)).persistent(false);
     for value in binds {
         query = query.bind(value);
@@ -274,6 +391,12 @@ async fn count_with_timeout(conn: &mut PgConnection, schema: &str, table: &str, 
         Err(e) if is_timeout(&e) => Ok(None),
         Err(e) => Err(err(e)),
     }
+}
+
+/// Limits the rest of the scope's statements; the scope's rollback ends it.
+async fn set_timeout(conn: &mut PgConnection, timeout: &str) -> Result<(), String> {
+    let sql = format!("SET LOCAL statement_timeout = '{timeout}'");
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql)).execute(conn).await.map(drop).map_err(err)
 }
 
 fn is_timeout(e: &sqlx::Error) -> bool {
@@ -428,14 +551,23 @@ mod tests {
     use crate::editor::model::{RowUpdate, SortKey};
 
     fn col(name: &str, type_name: &str) -> DataColumn {
-        DataColumn { name: name.into(), type_name: type_name.into(), nullable: true, has_default: false, read_only: None, comparable: true }
+        DataColumn {
+            name: name.into(),
+            type_name: type_name.into(),
+            nullable: true,
+            has_default: false,
+            read_only: None,
+            comparable: true,
+            filter_type: type_name.split('(').next().unwrap().into(),
+            text_like: false,
+        }
     }
 
     fn source() -> DataSource {
         DataSource {
             columns: vec![
                 col("id", "integer"),
-                col("Name", "character varying(20)"),
+                DataColumn { text_like: true, ..col("Name", "character varying(20)") },
                 DataColumn { read_only: Some("Generated column".into()), ..col("total", "numeric") },
             ],
             primary_key: vec!["id".into()],
@@ -462,7 +594,43 @@ mod tests {
     }
 
     fn condition(column: &str, op: FilterOp, value: Option<&str>) -> FilterNode {
-        FilterNode::Condition { column: column.into(), op, value: value.map(String::from) }
+        FilterNode::Condition { column: column.into(), op, value: value.map(String::from), values: vec![], negated: false, disabled: false }
+    }
+
+    fn list(column: &str, op: FilterOp, values: &[&str]) -> FilterNode {
+        FilterNode::Condition { column: column.into(), op, value: None, values: values.iter().map(|v| v.to_string()).collect(), negated: false, disabled: false }
+    }
+
+    fn group(op: GroupOp, children: Vec<FilterNode>) -> FilterNode {
+        FilterNode::Group { op, children, negated: false, disabled: false }
+    }
+
+    fn custom(sql: &str) -> FilterNode {
+        FilterNode::Custom { sql: sql.into(), negated: false, disabled: false }
+    }
+
+    fn set_flags(node: FilterNode, negate: bool, disable: bool) -> FilterNode {
+        match node {
+            FilterNode::Group { op, children, .. } => FilterNode::Group { op, children, negated: negate, disabled: disable },
+            FilterNode::Condition { column, op, value, values, .. } => FilterNode::Condition { column, op, value, values, negated: negate, disabled: disable },
+            FilterNode::Custom { sql, .. } => FilterNode::Custom { sql, negated: negate, disabled: disable },
+        }
+    }
+
+    fn negated(node: FilterNode) -> FilterNode {
+        set_flags(node, true, false)
+    }
+
+    fn disabled(node: FilterNode) -> FilterNode {
+        set_flags(node, false, true)
+    }
+
+    /// The spec's WHERE clause for one filter, and its binds.
+    fn where_of(node: FilterNode) -> (String, Vec<Option<String>>) {
+        let spec = DataSpec { filter: Some(node), ..Default::default() };
+        let mut binds = Vec::new();
+        let sql = where_clause(&source(), &spec, &mut binds).unwrap();
+        (sql, binds)
     }
 
     fn inner_sql(spec: &DataSpec) -> (String, Vec<Option<String>>) {
@@ -486,12 +654,11 @@ mod tests {
         let spec = DataSpec {
             filter: Some(FilterNode::Group {
                 op: GroupOp::And,
+                negated: false,
+                disabled: false,
                 children: vec![
                     condition("id", FilterOp::Eq, Some("1")),
-                    FilterNode::Group {
-                        op: GroupOp::Or,
-                        children: vec![condition("Name", FilterOp::Ne, Some("x'y")), condition("Name", FilterOp::IsNull, None)],
-                    },
+                    group(GroupOp::Or, vec![condition("Name", FilterOp::Ne, Some("x'y")), condition("Name", FilterOp::IsNull, None)]),
                     condition("total", FilterOp::IsNotNull, None),
                 ],
             }),
@@ -502,7 +669,7 @@ mod tests {
         let (sql, binds) = inner_sql(&spec);
         assert_eq!(
             sql,
-            "FROM \"s\".\"t\" WHERE (\"id\" = $1::integer AND (\"Name\" <> $2::character varying(20) OR \"Name\" IS NULL) AND \"total\" IS NOT NULL) \
+            "FROM \"s\".\"t\" WHERE (\"id\" = $1::integer AND (\"Name\" <> $2::character varying OR \"Name\" IS NULL) AND \"total\" IS NOT NULL) \
              AND (\nprice > 1 -- note\n) ORDER BY \nprice DESC --\n, \"s\".\"t\".\"id\" LIMIT 10 OFFSET 0) q"
         );
         assert_eq!(binds, [Some("1".to_string()), Some("x'y".to_string())]);
@@ -516,9 +683,112 @@ mod tests {
     fn blank_typed_text_and_empty_groups() {
         let blank = DataSpec { where_sql: Some(" \n ".into()), order_sql: Some("".into()), ..Default::default() };
         assert_eq!(inner_sql(&blank), inner_sql(&DataSpec::default()));
-        let group = |op| DataSpec { filter: Some(FilterNode::Group { op, children: vec![] }), ..Default::default() };
-        assert!(inner_sql(&group(GroupOp::And)).0.contains("WHERE TRUE"));
-        assert!(inner_sql(&group(GroupOp::Or)).0.contains("WHERE FALSE"));
+        let empty = |op| DataSpec { filter: Some(group(op, vec![])), ..Default::default() };
+        assert_eq!(inner_sql(&empty(GroupOp::And)), inner_sql(&DataSpec::default()));
+        assert_eq!(inner_sql(&empty(GroupOp::Or)), inner_sql(&DataSpec::default()));
+    }
+
+    #[test]
+    fn every_operator_makes_its_condition() {
+        let cases = [
+            (condition("id", FilterOp::Lt, Some("5")), r#""id" < $1::integer"#, vec!["5"]),
+            (condition("id", FilterOp::Le, Some("5")), r#""id" <= $1::integer"#, vec!["5"]),
+            (condition("id", FilterOp::Gt, Some("5")), r#""id" > $1::integer"#, vec!["5"]),
+            (condition("id", FilterOp::Ge, Some("5")), r#""id" >= $1::integer"#, vec!["5"]),
+            (condition("id", FilterOp::Contains, Some("5")), r#""id"::text ILIKE $1::text"#, vec!["%5%"]),
+            (condition("Name", FilterOp::BeginsWith, Some("a")), r#""Name"::text ILIKE $1::text"#, vec!["a%"]),
+            (condition("Name", FilterOp::EndsWith, Some("a")), r#""Name"::text ILIKE $1::text"#, vec!["%a"]),
+            (condition("Name", FilterOp::IsEmpty, None), r#""Name" = ''"#, vec![]),
+            (list("id", FilterOp::Between, &["1", "9"]), r#""id" BETWEEN $1::integer AND $2::integer"#, vec!["1", "9"]),
+            (list("id", FilterOp::In, &["1", "2", "3"]), r#""id" IN ($1::integer, $2::integer, $3::integer)"#, vec!["1", "2", "3"]),
+        ];
+        for (node, expected, binds) in cases {
+            let (sql, bound) = where_of(node);
+            assert_eq!(sql, format!(" WHERE {expected}"));
+            assert_eq!(bound, binds.iter().map(|b| Some(b.to_string())).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn filter_values_are_cast_without_the_type_modifier() {
+        // `$1::character varying(20)` would silently cut a longer value.
+        assert_eq!(where_of(condition("Name", FilterOp::Eq, Some("x"))).0, r#" WHERE "Name" = $1::character varying"#);
+    }
+
+    #[test]
+    fn like_patterns_escape_their_wildcards() {
+        let pattern = |op, value| where_of(condition("Name", op, Some(value))).1[0].clone().unwrap();
+        assert_eq!(pattern(FilterOp::Contains, r"50%_c\d"), r"%50\%\_c\\d%");
+        assert_eq!(pattern(FilterOp::BeginsWith, "%"), r"\%%");
+        assert_eq!(pattern(FilterOp::EndsWith, "_"), r"%\_");
+    }
+
+    #[test]
+    fn negation_and_nesting() {
+        let (sql, binds) = where_of(group(
+            GroupOp::Or,
+            vec![
+                negated(condition("id", FilterOp::Contains, Some("1"))),
+                negated(group(GroupOp::And, vec![condition("id", FilterOp::Eq, Some("2")), negated(custom("id > 3"))])),
+            ],
+        ));
+        assert_eq!(
+            sql,
+            " WHERE (NOT (\"id\"::text ILIKE $1::text) OR NOT (\"id\" = $2::integer AND NOT (\nid > 3\n)))"
+        );
+        assert_eq!(binds, [Some("%1%".to_string()), Some("2".to_string())]);
+    }
+
+    #[test]
+    fn custom_conditions_are_kept_apart_like_typed_text() {
+        assert_eq!(where_of(group(GroupOp::And, vec![custom(" a = 1 -- x ")])).0, " WHERE ((\na = 1 -- x\n))");
+    }
+
+    #[test]
+    fn disabled_nodes_bind_nothing_and_empty_groups_vanish() {
+        // The bind after a disabled condition is still $1.
+        let (sql, binds) = where_of(group(
+            GroupOp::And,
+            vec![disabled(condition("id", FilterOp::Eq, Some("1"))), condition("id", FilterOp::Eq, Some("2"))],
+        ));
+        assert_eq!(sql, r#" WHERE ("id" = $1::integer)"#);
+        assert_eq!(binds, [Some("2".to_string())]);
+
+        // All off under OR is no filter, not FALSE, at any depth.
+        let off = group(
+            GroupOp::Or,
+            vec![disabled(condition("id", FilterOp::Eq, Some("1"))), group(GroupOp::And, vec![disabled(custom("nonsense"))])],
+        );
+        assert_eq!(where_of(off.clone()), (String::new(), vec![]));
+        assert!(!filtered(&DataSpec { filter: Some(off), ..Default::default() }));
+
+        // An incomplete disabled condition is never looked at.
+        assert_eq!(where_of(group(GroupOp::And, vec![disabled(condition("nope", FilterOp::Eq, None))])).0, "");
+    }
+
+    #[test]
+    fn only_a_real_filter_counts_as_filtered() {
+        assert!(!filtered(&DataSpec::default()));
+        assert!(!filtered(&DataSpec { where_sql: Some("  ".into()), sort: vec![SortKey { column: "id".into(), descending: false }], ..Default::default() }));
+        assert!(filtered(&DataSpec { where_sql: Some("a".into()), ..Default::default() }));
+        assert!(filtered(&DataSpec { filter: Some(condition("id", FilterOp::IsNull, None)), ..Default::default() }));
+    }
+
+    #[test]
+    fn reads_the_filter_the_frontend_sends() {
+        // The client's `id` is ignored, and the flags are optional.
+        let node: FilterNode = serde_json::from_str(
+            r#"{"kind": "group", "id": "n1", "op": "or", "children": [
+                {"kind": "condition", "id": "n2", "column": "a", "op": "begins-with", "value": "x", "values": [], "negated": true, "disabled": false},
+                {"kind": "condition", "column": "a", "op": "in", "value": null, "values": ["1"]},
+                {"kind": "custom", "id": "n3", "sql": "true", "negated": false, "disabled": true}
+            ]}"#,
+        )
+        .unwrap();
+        let FilterNode::Group { op: GroupOp::Or, children, negated: false, disabled: false } = node else { panic!() };
+        assert!(matches!(&children[0], FilterNode::Condition { op: FilterOp::BeginsWith, negated: true, .. }));
+        assert!(matches!(&children[1], FilterNode::Condition { op: FilterOp::In, negated: false, .. }));
+        assert!(matches!(&children[2], FilterNode::Custom { disabled: true, .. }));
     }
 
     #[test]
@@ -533,8 +803,20 @@ mod tests {
         assert!(reject(filter(condition("nope", FilterOp::IsNull, None))).contains("no longer exists"));
         assert!(reject(filter(condition("doc", FilterOp::Eq, Some("{}")))).contains("can't be compared"));
         assert!(reject(filter(condition("id", FilterOp::Eq, None))).contains("no value"));
+        assert!(reject(filter(condition("doc", FilterOp::Gt, Some("1")))).contains("can't be compared"));
+        assert!(reject(filter(list("doc", FilterOp::In, &["1"]))).contains("can't be compared"));
+        assert!(reject(filter(list("doc", FilterOp::Between, &["1", "2"]))).contains("can't be compared"));
+        assert!(reject(filter(condition("id", FilterOp::IsEmpty, None))).contains("isn't text"));
+        assert!(reject(filter(list("id", FilterOp::Between, &["1"]))).contains("two values"));
+        assert!(reject(filter(list("id", FilterOp::Between, &["1", ""]))).contains("two values"));
+        assert!(reject(filter(list("id", FilterOp::In, &[]))).contains("no values"));
+        assert!(reject(filter(list("id", FilterOp::In, &["", ""]))).contains("no values"));
+        assert!(reject(filter(condition("id", FilterOp::Contains, None))).contains("no value"));
+        assert!(reject(filter(custom("  "))).contains("empty"));
         // A null check works on any type.
         assert!(select_page_sql("s", "t", &source, &filter(condition("doc", FilterOp::IsNull, None)), 0, 10).is_ok());
+        // And text matching works on the text the grid shows.
+        assert!(select_page_sql("s", "t", &source, &filter(condition("doc", FilterOp::Contains, Some("a"))), 0, 10).is_ok());
     }
 
     #[test]
@@ -804,6 +1086,16 @@ mod tests {
             }
         };
 
+        let count_where = |text: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!("SELECT count(*) FROM huxdb_filter_test.t WHERE {text}")))
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+
         // Which types sort follows the catalog, through domains and coercions.
         let source = page(DataSpec::default(), 0, 1).await.unwrap().source;
         let comparable: HashMap<_, _> = source.columns.iter().map(|c| (c.name.as_str(), c.comparable)).collect();
@@ -915,6 +1207,97 @@ mod tests {
         session.end(true).await.unwrap();
         assert_eq!(count(typed_where("grp IN ('first', 'second')")).await, Ok(Some(2)), "the writes committed");
         assert_eq!(original_ages().await, 25);
+
+        // The builder's operators, on the values the server really holds.
+        let spec_of = |node: FilterNode| DataSpec { filter: Some(node), ..Default::default() };
+        let matches = |node: FilterNode| count(spec_of(node));
+        assert_eq!(matches(condition("age", FilterOp::Contains, Some("5"))).await, Ok(Some(3)), "5, 15, 25");
+        assert_eq!(matches(condition("mood", FilterOp::Contains, Some("APP"))).await, Ok(Some(count_where("mood = 'happy'").await)), "any case, on an enum");
+        assert_eq!(matches(condition("doc", FilterOp::Contains, Some("{"))).await, Ok(Some(25)), "on json, which can't be compared");
+        assert_eq!(matches(condition("grp", FilterOp::BeginsWith, Some("g"))).await, Ok(Some(23)), "two were edited above");
+        assert_eq!(matches(condition("label", FilterOp::EndsWith, Some("5"))).await, Ok(Some(3)));
+        assert_eq!(matches(condition("age", FilterOp::Gt, Some("20"))).await, Ok(Some(5)));
+        assert_eq!(matches(condition("age", FilterOp::Le, Some("20"))).await, Ok(Some(20)));
+        assert_eq!(matches(list("age", FilterOp::Between, &["3", "5"])).await, Ok(Some(3)));
+        assert_eq!(matches(list("age", FilterOp::In, &["1", "", "2", "99"])).await, Ok(Some(2)));
+        assert_eq!(matches(negated(list("age", FilterOp::In, &["1", "2"]))).await, Ok(Some(23)));
+        assert_eq!(matches(custom("age % 2 = 0")).await, Ok(Some(12)));
+        assert!(matches(condition("age", FilterOp::Gt, Some("abc"))).await.unwrap_err().contains("invalid input syntax"));
+        // (age <= 2 OR (age > 20 AND NOT age = 25))
+        let nested = group(
+            GroupOp::Or,
+            vec![
+                condition("age", FilterOp::Le, Some("2")),
+                group(GroupOp::And, vec![condition("age", FilterOp::Gt, Some("20")), negated(condition("age", FilterOp::Eq, Some("25")))]),
+            ],
+        );
+        assert_eq!(matches(nested.clone()).await, Ok(Some(6)));
+        assert_eq!(page(spec_of(nested), 0, 25).await.unwrap().rows.len(), 6);
+        // NOT keeps NULL rows out, like <>: 20 of the 25 have an amount.
+        assert_eq!(matches(negated(condition("amount", FilterOp::Gt, Some("0")))).await, Ok(Some(0)));
+        // Custom text is as guarded as the typed WHERE.
+        assert!(matches(custom(write)).await.unwrap_err().contains("read-only transaction"));
+        assert_eq!(page(spec_of(group(GroupOp::And, vec![custom("true --")])), 0, 10).await.unwrap().rows.len(), 10);
+        assert_eq!(original_ages().await, 25);
+
+        // LIKE's wildcards in a value are literal, and each type's value keeps
+        // its precision: a cast to the column's own type would round or cut it.
+        let values = "
+             CREATE TABLE huxdb_filter_test.vals (
+               id int PRIMARY KEY, txt text, n numeric(10,2), v varchar(3), c char(3), b bit(3),
+               ts timestamp(0), d huxdb_filter_test.dv, e text, p huxdb_filter_test.pos);
+             INSERT INTO huxdb_filter_test.vals VALUES
+               (1, '50% off', 1.01, 'abc', 'abc', B'101', '2024-01-01 00:00:01', '', '', 1),
+               (2, '50 off', 2.00, 'abd', 'x', B'111', '2024-01-01 00:00:02', 'abcde', 'y', 2),
+               (3, 'a_b', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+               (4, 'axb', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+               (5, 'c\\d', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);";
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE DOMAIN huxdb_filter_test.dv AS varchar(5); CREATE DOMAIN huxdb_filter_test.pos AS int CHECK (VALUE > 0); {values}"))).execute(&pool).await.unwrap();
+        let vals = |node: FilterNode| {
+            let (session, pool) = (session.clone(), pool.clone());
+            async move { count_rows(&mut session.lease(&pool).await.unwrap(), schema, "vals", &DataSpec { filter: Some(node), ..Default::default() }).await }
+        };
+        assert_eq!(vals(condition("txt", FilterOp::Contains, Some("0%"))).await, Ok(Some(1)));
+        assert_eq!(vals(condition("txt", FilterOp::Contains, Some("a_b"))).await, Ok(Some(1)));
+        assert_eq!(vals(condition("txt", FilterOp::Contains, Some("c\\d"))).await, Ok(Some(1)));
+        assert_eq!(vals(condition("n", FilterOp::Gt, Some("1.005"))).await, Ok(Some(2)), "1.005 isn't rounded up to 1.01");
+        assert_eq!(vals(condition("n", FilterOp::Eq, Some("1.005"))).await, Ok(Some(0)));
+        assert_eq!(vals(condition("v", FilterOp::Eq, Some("abcd"))).await, Ok(Some(0)), "abcd isn't cut to abc");
+        assert_eq!(vals(condition("c", FilterOp::Eq, Some("abcd"))).await, Ok(Some(0)));
+        assert_eq!(vals(condition("c", FilterOp::Eq, Some("abc"))).await, Ok(Some(1)), "a char(3) isn't cut to one character");
+        assert_eq!(vals(condition("c", FilterOp::Eq, Some("x"))).await, Ok(Some(1)), "padding doesn't count");
+        assert_eq!(vals(condition("b", FilterOp::Eq, Some("101"))).await, Ok(Some(1)), "a bit(3) isn't cut to one bit");
+        assert_eq!(vals(condition("ts", FilterOp::Gt, Some("2024-01-01 00:00:01.4"))).await, Ok(Some(1)), "fractions aren't rounded away");
+        assert_eq!(vals(condition("d", FilterOp::Eq, Some("abcdefg"))).await, Ok(Some(0)), "a domain's modifier doesn't cut it either");
+        assert_eq!(vals(condition("p", FilterOp::Gt, Some("-1"))).await, Ok(Some(2)), "a domain's CHECK is about stored values");
+        assert_eq!(vals(condition("e", FilterOp::IsEmpty, None)).await, Ok(Some(1)));
+        assert_eq!(vals(condition("d", FilterOp::IsEmpty, None)).await, Ok(Some(1)), "a text domain can be empty");
+        assert!(vals(condition("n", FilterOp::IsEmpty, None)).await.unwrap_err().contains("isn't text"));
+
+        // A slow filter times out inside a transaction, which stays usable,
+        // with its timeout back as it was. An unfiltered page has no limit.
+        session.begin(&pool).await.unwrap();
+        assert_eq!(apply(EditBatch { deletes: vec![vec!["25".into()]], ..Default::default() }).await, Ok(1));
+        let slow = page(typed_where("pg_sleep(1) IS NOT NULL"), 0, 25).await.unwrap_err();
+        assert!(slow.contains("took longer than"), "{slow}");
+        assert_eq!(count(filter("id", FilterOp::Eq, Some("25"))).await, Ok(Some(0)), "still sees its own delete");
+        let setting: String = {
+            let mut lease = session.lease(&pool).await.unwrap();
+            sqlx::query_scalar("SELECT current_setting('statement_timeout')").fetch_one(lease.conn()).await.unwrap()
+        };
+        assert_eq!(setting, "0");
+        session.end(false).await.unwrap();
+        assert_eq!(count(DataSpec::default()).await, Ok(Some(25)));
+
+        // A server-side timeout on an unfiltered page isn't called the filter's.
+        session.begin(&pool).await.unwrap();
+        {
+            let mut lease = session.lease(&pool).await.unwrap();
+            sqlx::raw_sql("SET LOCAL statement_timeout = '100ms'").execute(lease.conn()).await.unwrap();
+        }
+        let slow = page(typed_order("pg_sleep(0.5)::text"), 0, 25).await.unwrap_err();
+        assert!(slow.contains("statement timeout") && !slow.contains("filter"), "{slow}");
+        session.end(false).await.unwrap();
 
         // Counting gives up without an error; Stop cancels a slow page.
         assert_eq!(count(typed_where("pg_sleep(6) IS NOT NULL")).await, Ok(None));

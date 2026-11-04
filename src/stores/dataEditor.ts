@@ -8,11 +8,13 @@
 //
 // `spec` is the filter and sort the page was loaded with. It lasts as long as
 // the tab, and changes only when a page loads with the new one, so a bad typed
-// WHERE leaves the last good spec, rows and paging in place.
+// WHERE leaves the last good spec, rows and paging in place. The filter builder
+// edits `filterDraft`, a copy of the filter that takes effect on Apply.
 
 import { create } from "zustand";
 import * as api from "../lib/api";
-import type { DataSource, DataSpec, DataTarget, EditBatch, FilterCondition, FilterNode } from "../lib/types";
+import { andWith, conditionNode, isComplete, newGroup, removeNode, sameFilter } from "../lib/filterTree";
+import type { DataSource, DataSpec, DataTarget, EditBatch, FilterGroup } from "../lib/types";
 import type { DesignerTab } from "./tabs";
 
 export type Value = string | null;
@@ -35,6 +37,10 @@ export interface DataEditor {
   rowKeys: string[];
   /** The filter and sort in effect. */
   spec: DataSpec;
+  /** The filter builder is showing. */
+  filterOpen: boolean;
+  /** The filter builder's tree. Unapplied changes don't make the tab dirty. */
+  filterDraft: FilterGroup;
   /** Zero-based. */
   page: number;
   pageSize: number;
@@ -59,19 +65,27 @@ export interface DataEditor {
   editing: { row: string; column: string } | null;
 }
 
+type DraftChange = (draft: FilterGroup) => FilterGroup;
+
 interface DataEditorState {
   editors: Record<string, DataEditor>;
 
   open: (tab: DesignerTab) => void;
   dispose: (id: string) => void;
   /** Loads a page (the current one by default) and, with `recount`, the row
-   * count. A `spec` takes effect if the page loads. */
-  load: (id: string, page?: number, recount?: boolean, spec?: DataSpec) => Promise<void>;
+   * count. A `spec`, and a `draft` change made along with it, take effect if the page loads. */
+  load: (id: string, page?: number, recount?: boolean, spec?: DataSpec, draft?: DraftChange) => Promise<void>;
   setPageSize: (id: string, size: number) => void;
   /** Header click: ascending, descending, off. `additive` (Shift) keeps the other sorted columns. */
   toggleSort: (id: string, column: string, additive: boolean) => void;
-  addFilter: (id: string, condition: Omit<FilterCondition, "kind">) => void;
-  removeFilter: (id: string, index: number) => void;
+  /** From the cell menu: ANDed with the filter, and with the draft so it isn't lost. */
+  addFilter: (id: string, condition: Parameters<typeof conditionNode>[0]) => void;
+  /** Removes a node (a chip) from the filter and the draft. */
+  removeFilter: (id: string, nodeId: string) => void;
+  toggleFilterPane: (id: string) => void;
+  setDraft: (id: string, change: DraftChange) => void;
+  /** Applies the draft, if it's complete. A rejected one stays for fixing. */
+  applyDraft: (id: string) => void;
   /** Applies the filter bar's text. A typed ORDER BY replaces the header sort. */
   applyTyped: (id: string, whereSql: string, orderSql: string) => void;
   clearSpec: (id: string) => void;
@@ -110,12 +124,8 @@ export const specLocked = (d: DataEditor | undefined) => !d || d.busy !== null |
 
 const EMPTY_SPEC: DataSpec = { filter: null, sort: [], whereSql: null, orderSql: null };
 
-/** The structured filter's conditions: the grid builds one AND group of them. */
-export const filterConditions = (spec: DataSpec) =>
-  spec.filter?.kind === "group" ? spec.filter.children.filter((c): c is FilterCondition => c.kind === "condition") : [];
-
-const withConditions = (children: FilterNode[]): DataSpec["filter"] =>
-  children.length ? { kind: "group", op: "and", children } : null;
+/** An empty tree is no filter. */
+const asFilter = (root: FilterGroup) => (root.children.length ? root : null);
 
 /** Unsaved: pending edits or an open transaction. */
 export const dataDirty = (d: DataEditor | undefined) => !!d && (d.inTransaction || pendingCount(d) > 0);
@@ -178,9 +188,9 @@ export const useDataEditor = create<DataEditorState>((set, get) => {
   };
 
   /** Goes to the first page with a changed spec. A sort keeps the count. */
-  const respec = (id: string, recount: boolean, change: (spec: DataSpec) => DataSpec) => {
+  const respec = (id: string, recount: boolean, change: (spec: DataSpec) => DataSpec, draft?: DraftChange) => {
     const d = get().editors[id];
-    if (d && !specLocked(d)) void get().load(id, 0, recount, change(d.spec));
+    if (d && !specLocked(d)) void get().load(id, 0, recount, change(d.spec), draft);
   };
 
   return {
@@ -196,6 +206,8 @@ export const useDataEditor = create<DataEditorState>((set, get) => {
             rows: [],
             rowKeys: [],
             spec: EMPTY_SPEC,
+            filterOpen: false,
+            filterDraft: newGroup("and"),
             page: 0,
             pageSize: 1000,
             total: null,
@@ -222,7 +234,7 @@ export const useDataEditor = create<DataEditorState>((set, get) => {
       });
     },
 
-    load: async (id, page, recount = false, nextSpec) => {
+    load: async (id, page, recount = false, nextSpec, draft) => {
       const d = get().editors[id];
       if (!d) return;
       const wanted = Math.max(0, page ?? d.page);
@@ -232,8 +244,9 @@ export const useDataEditor = create<DataEditorState>((set, get) => {
       try {
         const result = await api.fetchDataPage(id, target(d), spec, wanted * d.pageSize, d.pageSize);
         if (loadTokens[id] !== token) return;
-        patch(id, () => ({
+        patch(id, (e) => ({
           busy: null,
+          filterDraft: draft ? draft(e.filterDraft) : e.filterDraft,
           source: result.source,
           rows: result.rows,
           rowKeys: rowKeys(result.source, result.rows),
@@ -265,15 +278,28 @@ export const useDataEditor = create<DataEditorState>((set, get) => {
         return { ...spec, sort, orderSql: null };
       }),
 
-    addFilter: (id, condition) =>
-      respec(id, true, (spec) => {
-        const children = filterConditions(spec);
-        const same = children.some((c) => c.column === condition.column && c.op === condition.op && c.value === condition.value);
-        return same ? spec : { ...spec, filter: withConditions([...children, { kind: "condition", ...condition }]) };
-      }),
+    addFilter: (id, condition) => {
+      const d = get().editors[id];
+      if (!d || specLocked(d)) return;
+      const node = conditionNode(condition);
+      const same = (c: (typeof d.filterDraft.children)[number]) =>
+        c.kind === "condition" && !c.disabled && c.column === node.column && c.op === node.op && c.value === node.value && c.negated === node.negated;
+      if (d.spec.filter?.op === "and" && d.spec.filter.children.some(same)) return;
+      respec(id, true, (spec) => ({ ...spec, filter: andWith(spec.filter, node) }), (draft) => andWith(draft, node));
+    },
 
-    removeFilter: (id, index) =>
-      respec(id, true, (spec) => ({ ...spec, filter: withConditions(filterConditions(spec).filter((_, i) => i !== index)) })),
+    removeFilter: (id, nodeId) => {
+      respec(id, true, (spec) => ({ ...spec, filter: spec.filter && asFilter(removeNode(spec.filter, nodeId)) }), (draft) => removeNode(draft, nodeId));
+    },
+
+    toggleFilterPane: (id) => patch(id, (d) => ({ filterOpen: !d.filterOpen })),
+
+    setDraft: (id, change) => patch(id, (d) => ({ filterDraft: change(d.filterDraft) })),
+
+    applyDraft: (id) => {
+      const d = get().editors[id];
+      if (d && isComplete(d.filterDraft) && !sameFilter(d.filterDraft, d.spec.filter)) respec(id, true, (spec) => ({ ...spec, filter: asFilter(d.filterDraft) }));
+    },
 
     applyTyped: (id, whereSql, orderSql) =>
       respec(id, true, (spec) => ({
@@ -283,7 +309,9 @@ export const useDataEditor = create<DataEditorState>((set, get) => {
         sort: orderSql.trim() ? [] : spec.sort,
       })),
 
-    clearSpec: (id) => respec(id, true, () => EMPTY_SPEC),
+    clearSpec: (id) => {
+      respec(id, true, () => EMPTY_SPEC, () => newGroup("and"));
+    },
 
     select: (id, rows) => patch(id, () => ({ selected: rows })),
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import {
   AArrowDown,
   AArrowUp,
@@ -20,11 +20,12 @@ import {
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import type { FilterCondition } from "../../lib/types";
-import { PAGE_SIZES, filterConditions, pendingCount, specLocked, useDataEditor } from "../../stores/dataEditor";
+import { activeChildren, describeNode, isActive, sameFilter } from "../../lib/filterTree";
+import { PAGE_SIZES, pendingCount, specLocked, useDataEditor } from "../../stores/dataEditor";
 import { DEFAULT_FONT_SIZE, FONT_SIZES, useDataGridPrefs } from "../../stores/dataGridPrefs";
 import type { DataEditor as Editor } from "../../stores/dataEditor";
 import { DataGrid } from "./DataGrid";
+import { FilterBuilder } from "./FilterBuilder";
 import { ToolButton } from "../ToolButton";
 
 /** Navicat-style data editor for one tab: a table's rows in an editable grid. */
@@ -59,6 +60,7 @@ export function DataEditor({ id }: { id: string }) {
         </div>
       )}
       <FilterBar id={id} editor={editor} />
+      {editor.filterOpen && <FilterBuilder id={id} />}
       <DataGrid id={id} />
       <Messages id={id} editor={editor} />
       <div className="flex shrink-0 items-center gap-2 border-t border-base-300 bg-base-200/50 px-2 py-1">
@@ -113,11 +115,8 @@ function TransactionToolbar({ id, editor }: { id: string; editor: Editor }) {
   );
 }
 
-const describeCondition = ({ column, op, value }: FilterCondition) =>
-  op === "is-null" ? `${column} is null` : op === "is-not-null" ? `${column} is not null` : `${column} ${op === "eq" ? "=" : "≠"} ${value}`;
-
-/** The filter and sort in effect: chips for the cell filters, and the typed WHERE
- * and ORDER BY, which keep their text if the server rejects it. */
+/** The filter and sort in effect: a chip for each top-level part of the filter,
+ * and the typed WHERE and ORDER BY, which keep their text if the server rejects it. */
 function FilterBar({ id, editor }: { id: string; editor: Editor }) {
   const store = useDataEditor.getState();
   const { spec } = editor;
@@ -129,8 +128,9 @@ function FilterBar({ id, editor }: { id: string; editor: Editor }) {
 
   const locked = specLocked(editor);
   const hint = pendingCount(editor) > 0 ? "Commit or cancel your changes first" : undefined;
-  const conditions = filterConditions(spec);
-  const filtered = conditions.length > 0 || spec.whereSql !== null;
+  const chips = activeChildren(spec.filter);
+  const unapplied = !sameFilter(editor.filterDraft, spec.filter);
+  const filtered = (spec.filter !== null && isActive(spec.filter)) || spec.whereSql !== null;
   const sorted = spec.sort.length > 0 || spec.orderSql !== null;
   const status = filtered && sorted ? "Filtered, sorted" : filtered ? "Filtered" : sorted ? "Sorted" : null;
   const apply = () => store.applyTyped(id, whereText, orderText);
@@ -157,22 +157,38 @@ function FilterBar({ id, editor }: { id: string; editor: Editor }) {
 
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-base-300 px-2 py-1 text-xs">
-      <ListFilter className={`size-4 shrink-0 ${status ? "text-primary" : "text-base-content/50"}`} strokeWidth={1.75} aria-hidden />
+      <button
+        type="button"
+        className={`btn btn-ghost btn-xs shrink-0 font-normal ${editor.filterOpen ? "btn-active" : ""}`}
+        title={unapplied ? "Filter (unapplied changes)" : "Filter"}
+        aria-expanded={editor.filterOpen}
+        onClick={() => store.toggleFilterPane(id)}
+      >
+        <ListFilter className={`size-4 ${status ? "text-primary" : "text-base-content/50"}`} strokeWidth={1.75} aria-hidden />
+        Filter
+        {unapplied && <span className="status status-warning status-xs" aria-label="Unapplied changes" />}
+      </button>
       {status && <span className="badge badge-primary badge-soft badge-xs shrink-0">{status}</span>}
-      {conditions.map((condition, i) => (
-        <span key={`${i}:${describeCondition(condition)}`} className="badge badge-neutral badge-soft badge-sm max-w-56 gap-0.5 pr-0.5 font-mono" title={describeCondition(condition)}>
-          <span className="truncate">{describeCondition(condition)}</span>
-          <button type="button" className="btn btn-ghost btn-xs btn-square size-4 min-h-0" aria-label={`Remove filter ${describeCondition(condition)}`} title={hint} disabled={locked} onClick={() => store.removeFilter(id, i)}>
-            <X className="size-3" />
-          </button>
-        </span>
-      ))}
+      {chips.map((node, i) => {
+        const text = describeNode(node);
+        return (
+          <Fragment key={node.id}>
+            {i > 0 && spec.filter?.op === "or" && <span className="text-base-content/60">OR</span>}
+            <span className="badge badge-neutral badge-soft badge-sm max-w-56 gap-0.5 pr-0.5 font-mono" title={text}>
+              <span className="truncate">{text}</span>
+              <button type="button" className="btn btn-ghost btn-xs btn-square size-4 min-h-0" aria-label={`Remove filter ${text}`} title={hint} disabled={locked} onClick={() => store.removeFilter(id, node.id)}>
+                <X className="size-3" />
+              </button>
+            </span>
+          </Fragment>
+        );
+      })}
       {input("WHERE", "price > 10", whereText, setWhereText)}
       {input("ORDER BY", "name DESC", orderText, setOrderText)}
       <button type="button" className="btn btn-xs" title={hint} disabled={locked} onClick={apply}>
         Apply
       </button>
-      <button type="button" className="btn btn-ghost btn-xs" title={hint} disabled={locked || !(status || whereText || orderText)} onClick={clear}>
+      <button type="button" className="btn btn-ghost btn-xs" title={hint} disabled={locked || !(status || whereText || orderText || spec.filter || editor.filterDraft.children.length > 0)} onClick={clear}>
         Clear
       </button>
     </div>

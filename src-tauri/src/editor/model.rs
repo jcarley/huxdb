@@ -17,6 +17,12 @@ pub struct DataColumn {
     pub read_only: Option<String>,
     /// Its type has default ordering and equality operators (json doesn't).
     pub comparable: bool,
+    /// The base type without its modifier, e.g. `numeric`, which filter values
+    /// are cast to: `numeric(10,2)` would round them, `varchar(3)` cut them
+    /// and a domain's CHECK reject them.
+    pub filter_type: String,
+    /// Its base type is a string type, so a value can be the empty string.
+    pub text_like: bool,
 }
 
 /// The table's columns and primary key, reloaded with every page.
@@ -51,17 +57,54 @@ pub enum GroupOp {
 pub enum FilterOp {
     Eq,
     Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Contains,
+    BeginsWith,
+    EndsWith,
     IsNull,
     IsNotNull,
+    IsEmpty,
+    Between,
+    In,
 }
 
-/// A structured filter: conditions on columns, joined in groups.
+/// A structured filter: conditions on columns, joined in groups. Any node can
+/// be negated (SQL `NOT`) or disabled, which leaves it out of the query.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum FilterNode {
-    Group { op: GroupOp, children: Vec<FilterNode> },
-    /// `value` is bound and cast to the column's type; the null checks have none.
-    Condition { column: String, op: FilterOp, value: Option<String> },
+    Group {
+        op: GroupOp,
+        children: Vec<FilterNode>,
+        #[serde(default)]
+        negated: bool,
+        #[serde(default)]
+        disabled: bool,
+    },
+    /// `value` is the comparison's or text match's value, `values` the two
+    /// ends of a between or the items of an in-list. All are bound.
+    Condition {
+        column: String,
+        op: FilterOp,
+        value: Option<String>,
+        #[serde(default)]
+        values: Vec<String>,
+        #[serde(default)]
+        negated: bool,
+        #[serde(default)]
+        disabled: bool,
+    },
+    /// The user's SQL expression, treated like the typed WHERE.
+    Custom {
+        sql: String,
+        #[serde(default)]
+        negated: bool,
+        #[serde(default)]
+        disabled: bool,
+    },
 }
 
 /// One level of a sort.

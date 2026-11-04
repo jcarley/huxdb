@@ -412,6 +412,10 @@ export interface DataColumn {
   readOnly: string | null;
   /** Its type has default ordering and equality operators (json doesn't). */
   comparable: boolean;
+  /** The base type without its modifier, e.g. `numeric`, which filter values are cast to. */
+  filterType: string;
+  /** Its base type is a string type, so a value can be the empty string. */
+  textLike: boolean;
 }
 
 export interface DataSource {
@@ -428,18 +432,55 @@ export interface DataPage {
   rows: (string | null)[][];
 }
 
-export type FilterOp = "eq" | "ne" | "is-null" | "is-not-null";
+export type FilterOp =
+  | "eq"
+  | "ne"
+  | "lt"
+  | "le"
+  | "gt"
+  | "ge"
+  | "contains"
+  | "begins-with"
+  | "ends-with"
+  | "is-null"
+  | "is-not-null"
+  | "is-empty"
+  | "between"
+  | "in";
 
-export interface FilterCondition {
+interface FilterNodeBase {
+  /** Client-side only: the backend ignores it. */
+  id: string;
+  /** SQL `NOT`. */
+  negated: boolean;
+  /** Left out of the query, but kept in the builder. */
+  disabled: boolean;
+}
+
+export interface FilterCondition extends FilterNodeBase {
   kind: "condition";
   column: string;
   op: FilterOp;
-  /** Null for the null checks. */
+  /** The value of a comparison or text match. */
   value: string | null;
+  /** The two ends of a between, or the lines of an in-list. */
+  values: string[];
+}
+
+export interface FilterGroup extends FilterNodeBase {
+  kind: "group";
+  op: "and" | "or";
+  children: FilterNode[];
+}
+
+/** The user's SQL expression, treated like the typed WHERE. */
+export interface FilterCustom extends FilterNodeBase {
+  kind: "custom";
+  sql: string;
 }
 
 /** A structured filter: conditions on columns, joined in groups. */
-export type FilterNode = FilterCondition | { kind: "group"; op: "and" | "or"; children: FilterNode[] };
+export type FilterNode = FilterCondition | FilterGroup | FilterCustom;
 
 export interface SortKey {
   column: string;
@@ -448,7 +489,8 @@ export interface SortKey {
 
 /** Which rows a data tab shows, and in what order. */
 export interface DataSpec {
-  filter: FilterNode | null;
+  /** Always a group here: the builder's top level. */
+  filter: FilterGroup | null;
   sort: SortKey[];
   /** The user's SQL, ANDed with `filter`. */
   whereSql: string | null;

@@ -126,7 +126,11 @@ function DataCell({ column, loaded, locked }: CellProps) {
     if (!selected.includes(row.key)) actions.select(id, [row.key]);
     const items: MenuItem[] = [];
     if (!row.isNew && !specLocked(editor)) {
-      const filter = (op: FilterOp, value: Value = null) => actions.addFilter(id, { column: column.name, op, value });
+      const filter = (op: FilterOp, value: Value = null) =>
+        // The builder's blank value means "not filled in", so '' has its own operator.
+        value === "" && column.textLike
+          ? actions.addFilter(id, { column: column.name, op: "is-empty", value: null, negated: op === "ne" })
+          : actions.addFilter(id, { column: column.name, op, value });
       if (column.comparable && value !== null) {
         items.push({ label: "Filter by Value", icon: Equal, onClick: () => filter("eq", value) });
         items.push({ label: "Filter Out Value", icon: EqualNot, onClick: () => filter("ne", value) });
