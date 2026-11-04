@@ -410,6 +410,8 @@ export interface DataColumn {
   hasDefault: boolean;
   /** Why the column can't be edited, if so. */
   readOnly: string | null;
+  /** Its type has default ordering and equality operators (json doesn't). */
+  comparable: boolean;
 }
 
 export interface DataSource {
@@ -424,6 +426,34 @@ export interface DataSource {
 export interface DataPage {
   source: DataSource;
   rows: (string | null)[][];
+}
+
+export type FilterOp = "eq" | "ne" | "is-null" | "is-not-null";
+
+export interface FilterCondition {
+  kind: "condition";
+  column: string;
+  op: FilterOp;
+  /** Null for the null checks. */
+  value: string | null;
+}
+
+/** A structured filter: conditions on columns, joined in groups. */
+export type FilterNode = FilterCondition | { kind: "group"; op: "and" | "or"; children: FilterNode[] };
+
+export interface SortKey {
+  column: string;
+  descending: boolean;
+}
+
+/** Which rows a data tab shows, and in what order. */
+export interface DataSpec {
+  filter: FilterNode | null;
+  sort: SortKey[];
+  /** The user's SQL, ANDed with `filter`. */
+  whereSql: string | null;
+  /** The user's SQL; the UI sets this or `sort`, not both. */
+  orderSql: string | null;
 }
 
 export interface CellValue {

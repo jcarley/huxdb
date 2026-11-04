@@ -12,7 +12,7 @@ mod session_postgres;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use model::{DataPage, EditBatch};
+use model::{DataPage, DataSpec, EditBatch};
 use session_postgres::HeldSession;
 use tauri::State;
 
@@ -119,8 +119,16 @@ pub struct DataTarget {
     table: String,
 }
 
-/// The table's columns and one page of rows (with the tab's transaction's
-/// uncommitted changes, if one is open).
+/// Which rows of the selection one page holds.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageRange {
+    offset: u64,
+    limit: u64,
+}
+
+/// The table's columns and one page of the rows `spec` selects (with the tab's
+/// transaction's uncommitted changes, if one is open).
 #[tauri::command]
 pub async fn data_fetch_page(
     store: State<'_, ConnectionStore>,
@@ -128,16 +136,16 @@ pub async fn data_fetch_page(
     editors: State<'_, EditorSessions>,
     tab_id: String,
     target: DataTarget,
-    offset: u64,
-    limit: u64,
+    spec: DataSpec,
+    range: PageRange,
 ) -> Result<DataPage, String> {
     let pool = pool_for(&store, &sessions, &target.connection_id, Some(&target.database))?;
     let session = editors.get(&tab_id, &target.connection_id);
     let mut lease = session.lease(&pool).await?;
-    postgres::fetch_page(&mut lease, &target.schema, &target.table, offset, limit).await
+    postgres::fetch_page(&mut lease, &target.schema, &target.table, &spec, range.offset, range.limit).await
 }
 
-/// The table's exact row count, or null if counting took too long.
+/// How many rows `spec` selects, or null if counting took too long.
 #[tauri::command]
 pub async fn data_count(
     store: State<'_, ConnectionStore>,
@@ -145,11 +153,12 @@ pub async fn data_count(
     editors: State<'_, EditorSessions>,
     tab_id: String,
     target: DataTarget,
+    spec: DataSpec,
 ) -> Result<Option<i64>, String> {
     let pool = pool_for(&store, &sessions, &target.connection_id, Some(&target.database))?;
     let session = editors.get(&tab_id, &target.connection_id);
     let mut lease = session.lease(&pool).await?;
-    postgres::count_rows(&mut lease, &target.schema, &target.table).await
+    postgres::count_rows(&mut lease, &target.schema, &target.table, &spec).await
 }
 
 /// Applies the grid's pending edits all or nothing; returns the rows changed.

@@ -5,10 +5,14 @@
 // Edits are pending until Commit: changed cells by row, new rows, and rows
 // marked deleted. Commit sends them as one batch; without an open transaction
 // the backend commits it at once, inside one it runs in a savepoint.
+//
+// `spec` is the filter and sort the page was loaded with. It lasts as long as
+// the tab, and changes only when a page loads with the new one, so a bad typed
+// WHERE leaves the last good spec, rows and paging in place.
 
 import { create } from "zustand";
 import * as api from "../lib/api";
-import type { DataSource, DataTarget, EditBatch } from "../lib/types";
+import type { DataSource, DataSpec, DataTarget, EditBatch, FilterCondition, FilterNode } from "../lib/types";
 import type { DesignerTab } from "./tabs";
 
 export type Value = string | null;
@@ -29,10 +33,12 @@ export interface DataEditor {
   rows: Value[][];
   /** Each loaded row's key (see `rowKeys`), computed once per page. */
   rowKeys: string[];
+  /** The filter and sort in effect. */
+  spec: DataSpec;
   /** Zero-based. */
   page: number;
   pageSize: number;
-  /** Exact row count; null while counting or when counting took too long. */
+  /** Rows the spec selects; null while counting or when counting took too long. */
   total: number | null;
   counting: boolean;
   /** What the tab is waiting for (Stop cancels it). */
@@ -58,9 +64,17 @@ interface DataEditorState {
 
   open: (tab: DesignerTab) => void;
   dispose: (id: string) => void;
-  /** Loads a page (the current one by default) and, with `recount`, the row count. */
-  load: (id: string, page?: number, recount?: boolean) => Promise<void>;
+  /** Loads a page (the current one by default) and, with `recount`, the row
+   * count. A `spec` takes effect if the page loads. */
+  load: (id: string, page?: number, recount?: boolean, spec?: DataSpec) => Promise<void>;
   setPageSize: (id: string, size: number) => void;
+  /** Header click: ascending, descending, off. `additive` (Shift) keeps the other sorted columns. */
+  toggleSort: (id: string, column: string, additive: boolean) => void;
+  addFilter: (id: string, condition: Omit<FilterCondition, "kind">) => void;
+  removeFilter: (id: string, index: number) => void;
+  /** Applies the filter bar's text. A typed ORDER BY replaces the header sort. */
+  applyTyped: (id: string, whereSql: string, orderSql: string) => void;
+  clearSpec: (id: string) => void;
   select: (id: string, rows: string[]) => void;
   setEditing: (id: string, cell: { row: string; column: string } | null) => void;
   setCell: (id: string, row: string, column: string, value: Value) => void;
@@ -91,6 +105,18 @@ const rowKeys = (source: DataSource, rows: Value[][]) => {
 export const pendingCount = (d: DataEditor) =>
   Object.keys(d.edits).length + Object.keys(d.deletes).length + d.inserts.length;
 
+/** Filter, sort and paging changes wait for the running operation and pending edits. */
+export const specLocked = (d: DataEditor | undefined) => !d || d.busy !== null || pendingCount(d) > 0;
+
+const EMPTY_SPEC: DataSpec = { filter: null, sort: [], whereSql: null, orderSql: null };
+
+/** The structured filter's conditions: the grid builds one AND group of them. */
+export const filterConditions = (spec: DataSpec) =>
+  spec.filter?.kind === "group" ? spec.filter.children.filter((c): c is FilterCondition => c.kind === "condition") : [];
+
+const withConditions = (children: FilterNode[]): DataSpec["filter"] =>
+  children.length ? { kind: "group", op: "and", children } : null;
+
 /** Unsaved: pending edits or an open transaction. */
 export const dataDirty = (d: DataEditor | undefined) => !!d && (d.inTransaction || pendingCount(d) > 0);
 
@@ -119,6 +145,7 @@ const noPending = { edits: {}, deletes: {}, inserts: [], selected: [], editing: 
 let newRowCounter = 0;
 /** Per tab, so a slow response can't overwrite a newer one. */
 const loadTokens: Record<string, number> = {};
+const countTokens: Record<string, number> = {};
 
 export const useDataEditor = create<DataEditorState>((set, get) => {
   const patch = (id: string, change: (d: DataEditor) => Partial<DataEditor>) =>
@@ -139,14 +166,21 @@ export const useDataEditor = create<DataEditorState>((set, get) => {
   const count = async (id: string) => {
     const d = get().editors[id];
     if (!d) return;
+    const token = (countTokens[id] = (countTokens[id] ?? 0) + 1);
     patch(id, () => ({ counting: true, total: null }));
     try {
-      const total = await api.countRows(id, target(d));
-      patch(id, () => ({ counting: false, total }));
+      const total = await api.countRows(id, target(d), d.spec);
+      if (countTokens[id] === token) patch(id, () => ({ counting: false, total }));
     } catch (err) {
       // Counting runs beside other operations, so it leaves `busy` alone.
-      patch(id, () => ({ counting: false, ...failure(err) }));
+      if (countTokens[id] === token) patch(id, () => ({ counting: false, ...failure(err) }));
     }
+  };
+
+  /** Goes to the first page with a changed spec. A sort keeps the count. */
+  const respec = (id: string, recount: boolean, change: (spec: DataSpec) => DataSpec) => {
+    const d = get().editors[id];
+    if (d && !specLocked(d)) void get().load(id, 0, recount, change(d.spec));
   };
 
   return {
@@ -161,6 +195,7 @@ export const useDataEditor = create<DataEditorState>((set, get) => {
             source: null,
             rows: [],
             rowKeys: [],
+            spec: EMPTY_SPEC,
             page: 0,
             pageSize: 1000,
             total: null,
@@ -180,26 +215,29 @@ export const useDataEditor = create<DataEditorState>((set, get) => {
       // Rolls back an open transaction; nothing to report if that fails.
       api.sessionClose(id).catch(() => {});
       delete loadTokens[id];
+      delete countTokens[id];
       set((s) => {
         const { [id]: _, ...editors } = s.editors;
         return { editors };
       });
     },
 
-    load: async (id, page, recount = false) => {
+    load: async (id, page, recount = false, nextSpec) => {
       const d = get().editors[id];
       if (!d) return;
       const wanted = Math.max(0, page ?? d.page);
+      const spec = nextSpec ?? d.spec;
       const token = (loadTokens[id] = (loadTokens[id] ?? 0) + 1);
       patch(id, () => ({ busy: "load", error: null }));
       try {
-        const result = await api.fetchDataPage(id, target(d), wanted * d.pageSize, d.pageSize);
+        const result = await api.fetchDataPage(id, target(d), spec, wanted * d.pageSize, d.pageSize);
         if (loadTokens[id] !== token) return;
         patch(id, () => ({
           busy: null,
           source: result.source,
           rows: result.rows,
           rowKeys: rowKeys(result.source, result.rows),
+          spec,
           page: wanted,
           ...noPending,
         }));
@@ -214,6 +252,38 @@ export const useDataEditor = create<DataEditorState>((set, get) => {
       patch(id, () => ({ pageSize: size }));
       void get().load(id, 0);
     },
+
+    toggleSort: (id, column, additive) =>
+      respec(id, false, (spec) => {
+        const current = spec.sort.find((k) => k.column === column);
+        // Ascending, descending, then off.
+        const next = current?.descending ? null : { column, descending: !!current };
+        const others = additive ? spec.sort : [];
+        const sort = current && additive
+          ? others.flatMap((k) => (k.column !== column ? [k] : next ? [next] : []))
+          : [...others, ...(next ? [next] : [])];
+        return { ...spec, sort, orderSql: null };
+      }),
+
+    addFilter: (id, condition) =>
+      respec(id, true, (spec) => {
+        const children = filterConditions(spec);
+        const same = children.some((c) => c.column === condition.column && c.op === condition.op && c.value === condition.value);
+        return same ? spec : { ...spec, filter: withConditions([...children, { kind: "condition", ...condition }]) };
+      }),
+
+    removeFilter: (id, index) =>
+      respec(id, true, (spec) => ({ ...spec, filter: withConditions(filterConditions(spec).filter((_, i) => i !== index)) })),
+
+    applyTyped: (id, whereSql, orderSql) =>
+      respec(id, true, (spec) => ({
+        ...spec,
+        whereSql: whereSql.trim() || null,
+        orderSql: orderSql.trim() || null,
+        sort: orderSql.trim() ? [] : spec.sort,
+      })),
+
+    clearSpec: (id) => respec(id, true, () => EMPTY_SPEC),
 
     select: (id, rows) => patch(id, () => ({ selected: rows })),
 

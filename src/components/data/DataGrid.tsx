@@ -2,9 +2,9 @@ import { createContext, memo, useContext, useEffect, useMemo, useRef, useState }
 import type { KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from "react";
 import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
 import { useShallow } from "zustand/react/shallow";
-import { Ban, Eraser, KeyRound, Trash2 } from "lucide-react";
-import type { DataColumn } from "../../lib/types";
-import { useDataEditor } from "../../stores/dataEditor";
+import { ArrowDown, ArrowUp, Ban, CircleSlash, Equal, EqualNot, Eraser, KeyRound, ListFilter, Trash2 } from "lucide-react";
+import type { DataColumn, FilterOp } from "../../lib/types";
+import { specLocked, useDataEditor } from "../../stores/dataEditor";
 import type { Value } from "../../stores/dataEditor";
 import { tableKey, useDataGridPrefs } from "../../stores/dataGridPrefs";
 import { DesignerId } from "../designer/context";
@@ -121,9 +121,21 @@ function DataCell({ column, loaded, locked }: CellProps) {
 
   const onContextMenu = (e: MouseEvent) => {
     // Read now: this cell may not have re-rendered since the selection changed.
-    const selected = useDataEditor.getState().editors[id]?.selected ?? [];
+    const editor = useDataEditor.getState().editors[id];
+    const selected = editor?.selected ?? [];
     if (!selected.includes(row.key)) actions.select(id, [row.key]);
     const items: MenuItem[] = [];
+    if (!row.isNew && !specLocked(editor)) {
+      const filter = (op: FilterOp, value: Value = null) => actions.addFilter(id, { column: column.name, op, value });
+      if (column.comparable && value !== null) {
+        items.push({ label: "Filter by Value", icon: Equal, onClick: () => filter("eq", value) });
+        items.push({ label: "Filter Out Value", icon: EqualNot, onClick: () => filter("ne", value) });
+      }
+      if (column.nullable) {
+        items.push({ label: "Filter: Is NULL", icon: CircleSlash, onClick: () => filter("is-null") });
+        items.push({ label: "Filter: Is Not NULL", icon: ListFilter, onClick: () => filter("is-not-null") });
+      }
+    }
     if (editable) {
       if (column.nullable) items.push({ label: "Set to NULL", icon: Ban, onClick: () => set(null) });
       items.push({ label: "Set to Empty String", icon: Eraser, onClick: () => set("") });
@@ -229,6 +241,40 @@ function DataRow({ row, children }: { row: GridRow; children: ReactNode }) {
       </td>
       <RowState.Provider value={state}>{children}</RowState.Provider>
     </tr>
+  );
+}
+
+/** A column's name in its header, which sorts on click (Shift adds to the sort)
+ * when the type allows it. This, not the grid, subscribes to the sort. */
+function HeaderLabel({ column, isKey, children }: { column: DataColumn; isKey: boolean; children: ReactNode }) {
+  const id = useContext(DesignerId);
+  const { rank, descending, stacked, locked } = useDataEditor(
+    useShallow((s) => {
+      const editor = s.editors[id];
+      const sort = editor?.spec.sort ?? [];
+      const i = sort.findIndex((k) => k.column === column.name);
+      return { rank: i + 1, descending: !!sort[i]?.descending, stacked: sort.length > 1, locked: specLocked(editor) };
+    }),
+  );
+  const label = (
+    <>
+      {isKey && <KeyRound className="size-[0.9em] shrink-0 text-warning" />}
+      <span className="truncate">{children}</span>
+      {rank > 0 &&
+        (descending ? <ArrowDown className="size-[0.9em] shrink-0 text-primary" aria-label="Sorted descending" /> : <ArrowUp className="size-[0.9em] shrink-0 text-primary" aria-label="Sorted ascending" />)}
+      {rank > 0 && stacked && <span className="shrink-0 text-[0.8em] text-primary tabular-nums">{rank}</span>}
+    </>
+  );
+  if (!column.comparable) return <span className="flex items-center gap-1 overflow-hidden">{label}</span>;
+  return (
+    <button
+      type="button"
+      className="flex w-full cursor-default items-center gap-1 overflow-hidden font-semibold"
+      disabled={locked}
+      onClick={(e) => useDataEditor.getState().toggleSort(id, column.name, e.shiftKey)}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -348,12 +394,9 @@ export const DataGrid = memo(function DataGrid({ id }: { id: string }) {
                       title={`${column.typeName}${column.readOnly ? ` — ${column.readOnly}` : ""}`}
                       className="relative border-r border-b border-base-300 bg-base-200 px-1.5 py-1 font-semibold text-base-content"
                     >
-                      <span className="flex items-center gap-1 overflow-hidden">
-                        {keys.has(column.name) && <KeyRound className="size-[0.9em] shrink-0 text-warning" />}
-                        <span className="truncate">
-                          <table.FlexRender header={h} />
-                        </span>
-                      </span>
+                      <HeaderLabel column={column} isKey={keys.has(column.name)}>
+                        <table.FlexRender header={h} />
+                      </HeaderLabel>
                       <ResizeHandle
                         onResize={(width) => setColumnWidth(savedKey, column.name, width)}
                         onFit={() => setColumnWidth(savedKey, column.name, fitWidth(column.name, rows, index, fontSize))}

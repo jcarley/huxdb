@@ -3,7 +3,7 @@
 // Commands reject with a plain error string.
 
 import { invoke } from "@tauri-apps/api/core";
-import type { ConnectionConfig, DataPage, DataTarget, EditBatch, QualifiedName, QueryResult, SchemaObjects, TableDesign, TableInfo, ViewDesign, ViewInfo } from "./types";
+import type { ConnectionConfig, DataPage, DataSpec, DataTarget, EditBatch, QualifiedName, QueryResult, SchemaObjects, TableDesign, TableInfo, ViewDesign, ViewInfo } from "./types";
 
 export const listConnections = () => invoke<ConnectionConfig[]>("list_connections");
 
@@ -106,11 +106,12 @@ export const CANCELLED = "Cancelled";
 
 // Data editor ----------------------------------------------------------------
 
-export const fetchDataPage = (tabId: string, target: DataTarget, offset: number, limit: number) =>
-  invoke<DataPage>("data_fetch_page", { tabId, target, offset, limit });
+export const fetchDataPage = (tabId: string, target: DataTarget, spec: DataSpec, offset: number, limit: number) =>
+  invoke<DataPage>("data_fetch_page", { tabId, target, spec, range: { offset, limit } });
 
-/** Exact row count; null when counting took too long. */
-export const countRows = (tabId: string, target: DataTarget) => invoke<number | null>("data_count", { tabId, target });
+/** How many rows `spec` selects; null when counting took too long. */
+export const countRows = (tabId: string, target: DataTarget, spec: DataSpec) =>
+  invoke<number | null>("data_count", { tabId, target, spec });
 
 /** Applies pending edits all or nothing; resolves to the number of rows changed. */
 export const applyEdits = (tabId: string, target: DataTarget, batch: EditBatch) =>

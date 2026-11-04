@@ -15,6 +15,8 @@ pub struct DataColumn {
     pub has_default: bool,
     /// Why the column can't be edited (binary, generated, identity ALWAYS), if so.
     pub read_only: Option<String>,
+    /// Its type has default ordering and equality operators (json doesn't).
+    pub comparable: bool,
 }
 
 /// The table's columns and primary key, reloaded with every page.
@@ -34,6 +36,53 @@ pub struct DataSource {
 pub struct DataPage {
     pub source: DataSource,
     pub rows: Vec<Vec<Option<String>>>,
+}
+
+/// How a [`FilterNode::Group`] joins its children.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum GroupOp {
+    And,
+    Or,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum FilterOp {
+    Eq,
+    Ne,
+    IsNull,
+    IsNotNull,
+}
+
+/// A structured filter: conditions on columns, joined in groups.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum FilterNode {
+    Group { op: GroupOp, children: Vec<FilterNode> },
+    /// `value` is bound and cast to the column's type; the null checks have none.
+    Condition { column: String, op: FilterOp, value: Option<String> },
+}
+
+/// One level of a sort.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SortKey {
+    pub column: String,
+    pub descending: bool,
+}
+
+/// Which rows a data tab shows, and in what order. The typed parts are the
+/// user's SQL, run only in a read-only scope.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DataSpec {
+    pub filter: Option<FilterNode>,
+    pub sort: Vec<SortKey>,
+    /// ANDed with `filter`.
+    pub where_sql: Option<String>,
+    /// Sorts after `sort`; the UI only ever sets one of the two.
+    pub order_sql: Option<String>,
 }
 
 /// A column's new value (`None` = NULL).

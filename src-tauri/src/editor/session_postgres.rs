@@ -145,6 +145,18 @@ impl Lease<'_> {
         Ok(())
     }
 
+    /// A scope that can't write, for anything that may run the user's SQL. It
+    /// has to be set before the scope's first query. Closing the scope undoes
+    /// it, also in a savepoint, so the user's transaction stays read-write.
+    pub async fn open_read_scope(&mut self) -> Result<(), String> {
+        self.open_scope().await?;
+        let read_only = execute(self.conn(), "SET TRANSACTION READ ONLY").await;
+        if read_only.is_err() {
+            self.close_scope(false).await?;
+        }
+        read_only
+    }
+
     /// Ends the scope, keeping its work or undoing it.
     pub async fn close_scope(&mut self, keep: bool) -> Result<(), String> {
         let sql = match (self.in_transaction(), keep) {
