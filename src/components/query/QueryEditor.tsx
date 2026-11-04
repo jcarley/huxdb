@@ -1,37 +1,45 @@
 import { useEffect, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
+import { closeCompletion } from "@codemirror/autocomplete";
+import { indentWithTab } from "@codemirror/commands";
 import { Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
-import { CirclePlay, OctagonX, Play, X } from "lucide-react";
+import { CirclePlay, OctagonX, Play, Settings2, X } from "lucide-react";
 import * as api from "../../lib/api";
 import { useQueryEditor } from "../../stores/queryEditor";
 import type { QueryEditor as Editor } from "../../stores/queryEditor";
+import { useQueryPrefs } from "../../stores/queryPrefs";
 import { useTabs } from "../../stores/tabs";
 import { SqlEditor } from "../SqlEditor";
 import { ToolButton } from "../ToolButton";
+import { completionCompartment, completionExtension } from "./completion";
 import { QueryResults } from "./QueryResults";
 import { currentScope, statementHighlight } from "./statementHighlight";
 
 const MIN_PANEL = 80;
 
-/** Editor extensions for one tab: the highlight, and Cmd+Return to run. */
+/** Editor extensions for one tab: the highlight, completion, Tab to indent, and Cmd+Return to run. */
 function queryExtensions(id: string) {
   const { run } = useQueryEditor.getState();
   return [
     statementHighlight,
+    completionCompartment.of(completionExtension(useQueryPrefs.getState())),
+    keymap.of([indentWithTab]),
     // Ahead of the default keymap, where Mod-Enter inserts a line.
     Prec.highest(
       keymap.of([
         {
           key: "Mod-Enter",
           run: (view) => {
+            closeCompletion(view);
             void run(id, currentScope(view));
             return true;
           },
         },
         {
           key: "Shift-Mod-Enter",
-          run: () => {
+          run: (view) => {
+            closeCompletion(view);
             void run(id, { kind: "all" });
             return true;
           },
@@ -90,6 +98,32 @@ function TargetSelects({ id, editor }: { id: string; editor: Editor }) {
   );
 }
 
+/** The completion settings, shared by every query tab. */
+function CompletionMenu() {
+  const completion = useQueryPrefs((s) => s.completion);
+  const upperCaseKeywords = useQueryPrefs((s) => s.upperCaseKeywords);
+  const { setCompletion, setUpperCaseKeywords } = useQueryPrefs.getState();
+
+  return (
+    <div className="dropdown dropdown-end">
+      <button type="button" tabIndex={0} className="btn btn-ghost btn-sm btn-square" title="Completion settings" aria-label="Completion settings">
+        <Settings2 className="size-4 text-primary" strokeWidth={1.75} />
+      </button>
+      {/* Above CodeMirror's own layers: the gutters are at 200. */}
+      <div tabIndex={0} className="dropdown-content z-300 flex w-52 flex-col gap-2 rounded-box border border-base-300 bg-base-100 p-3 text-sm shadow-lg">
+        <label className="label cursor-pointer justify-start gap-2 text-base-content">
+          <input type="checkbox" className="checkbox checkbox-xs" checked={completion} onChange={(e) => setCompletion(e.target.checked)} />
+          Code completion
+        </label>
+        <label className="label cursor-pointer justify-start gap-2 text-base-content">
+          <input type="checkbox" className="checkbox checkbox-xs" checked={upperCaseKeywords} disabled={!completion} onChange={(e) => setUpperCaseKeywords(e.target.checked)} />
+          Upper-case keywords
+        </label>
+      </div>
+    </div>
+  );
+}
+
 function Toolbar({ id, editor, view }: { id: string; editor: Editor; view: () => EditorView | null }) {
   const { run, stop, setContinueOnError } = useQueryEditor.getState();
   const running = editor.runId !== null;
@@ -114,7 +148,8 @@ function Toolbar({ id, editor, view }: { id: string; editor: Editor; view: () =>
         Continue on Error
       </label>
       <TargetSelects id={id} editor={editor} />
-      <span className="ml-auto flex items-center gap-2 text-xs">
+      <div className="ml-auto flex items-center gap-2 text-xs">
+        <CompletionMenu />
         {editor.progress && (
           <span className="text-base-content/70 tabular-nums">
             <span className="loading loading-spinner loading-xs mr-1 align-middle" />
@@ -127,7 +162,7 @@ function Toolbar({ id, editor, view }: { id: string; editor: Editor; view: () =>
             Transaction failed
           </span>
         )}
-      </span>
+      </div>
     </div>
   );
 }
@@ -151,9 +186,15 @@ export function QueryEditor({ id }: { id: string }) {
   const editor = useQueryEditor((s) => s.editors[id]);
   const setSql = useQueryEditor((s) => s.setSql);
   const [extensions] = useState(() => queryExtensions(id));
+  const completion = useQueryPrefs((s) => s.completion);
+  const upperCaseKeywords = useQueryPrefs((s) => s.upperCaseKeywords);
   const [panelHeight, setPanelHeight] = useState(280);
   const container = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
+
+  useEffect(() => {
+    view.current?.dispatch({ effects: completionCompartment.reconfigure(completionExtension({ completion, upperCaseKeywords })) });
+  }, [completion, upperCaseKeywords]);
 
   const startResize = (e: ReactMouseEvent) => {
     e.preventDefault();
