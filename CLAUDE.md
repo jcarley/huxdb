@@ -20,6 +20,7 @@ Rust has unit tests; the frontend has no test framework, so `npm run build` (tsc
 
 - **Start each new feature on its own branch** named `feature/<name>` (e.g. `feature/query-editor`), created from `main` before any changes are made.
 - **Don't commit.** The developer makes all commits so that every change is reviewed by a human. Leave the finished work uncommitted on the feature branch.
+- **Releases:** merging a PR into `main` runs `.github/workflows/release.yml`, which tests, builds macOS (Apple Silicon and Intel), Windows and Linux, and publishes a GitHub release last, so a failed run leaves no tag or release. A direct push doesn't release; run the workflow by hand for that. The version is major.minor from `tauri.conf.json` plus the next free patch from the `v*` tags (`.github/scripts/next-version.sh`), written into `tauri.conf.json` on the runner only. The workflow never commits, so the repo files keep their base version: to start a new minor or major, change it in `tauri.conf.json`, `package.json` and `Cargo.toml`. Builds are unsigned (macOS ad-hoc).
 - **Plans and research live in `docs/`:** `docs/research/` for findings, `docs/recommendations/` for backlogs, `docs/phases/<feature>/` for iterations. See `docs/README.md`.
 
 ## Commands

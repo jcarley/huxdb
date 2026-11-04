@@ -1,0 +1,143 @@
+# Builds every platform when a PR merges into main, then publishes one GitHub
+# release. Nothing is tagged or released until all the builds have passed.
+name: Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
+
+# One release at a time, so two merges can't pick the same version. A PR closed
+# without merging gets its own group, so it can't replace a queued release.
+# GitHub keeps only the newest pending run, so merges that land during a build
+# can share one release: it includes their commits, and its notes list their PRs.
+concurrency:
+  group: ${{ (github.event_name == 'pull_request' && !github.event.pull_request.merged) && github.run_id || 'release' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # After a merge, the event's own ref is the PR's merge ref, which can be stale.
+  RELEASE_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+  LINUX_PACKAGES: libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils libssl-dev
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare:
+    if: github.event.pull_request.merged == true || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          fetch-depth: 0
+      - id: version
+        run: echo "version=$(.github/scripts/next-version.sh)" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: prepare
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+      - run: |
+          # shellcheck disable=SC2086
+          sudo apt-get update && sudo apt-get install -y $LINUX_PACKAGES
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+      - run: npm ci
+      - run: npm run build
+      - run: cargo test
+        working-directory: src-tauri
+
+  build:
+    needs: [prepare, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+      - if: runner.os == 'Linux'
+        run: |
+          # shellcheck disable=SC2086
+          sudo apt-get update && sudo apt-get install -y $LINUX_PACKAGES
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+          key: ${{ matrix.target }}
+      - run: npm ci
+      - name: Set the release version
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          jq --arg version "$VERSION" '.version = $version' src-tauri/tauri.conf.json > tauri.conf.json.new
+          mv tauri.conf.json.new src-tauri/tauri.conf.json
+      - run: npm run tauri build -- --target ${{ matrix.target }}
+        env:
+          # Ad-hoc signing, or macOS reports Apple Silicon downloads as damaged.
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
+      - name: Collect the installers
+        env:
+          BUNDLE: src-tauri/target/${{ matrix.target }}/release/bundle
+        run: |
+          shopt -s nullglob
+          mkdir installers
+          cp "$BUNDLE"/{dmg/*.dmg,nsis/*-setup.exe,msi/*.msi,appimage/*.AppImage,deb/*.deb,rpm/*.rpm} installers/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: installers-${{ matrix.target }}
+          path: installers/*
+          if-no-files-found: error
+
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: v${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+      - uses: actions/download-artifact@v8
+        with:
+          path: installers
+          merge-multiple: true
+      - run: .github/scripts/release-notes.sh "$TAG" "$RELEASE_SHA" installers > notes.md
+      - run: gh release create "$TAG" installers/* --target "$RELEASE_SHA" --title "huxdb $TAG" --notes-file notes.md
