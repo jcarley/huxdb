@@ -231,6 +231,7 @@ impl QuerySession {
                 notices: session.notices.take(),
                 note: None,
                 tx: session.tx,
+                changes_catalog: statement.info.changes_catalog,
             };
 
             let mut failed = true;

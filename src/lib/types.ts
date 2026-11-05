@@ -554,6 +554,35 @@ export interface QueryError {
   position: number | null;
 }
 
+export type RelationKind = "table" | "view" | "materialized-view";
+
+export interface CatalogColumn {
+  name: string;
+  /** `quote_ident` of the name, when that isn't the name. */
+  quoted?: string;
+  dataType: string;
+}
+
+export interface CatalogRelation {
+  name: string;
+  quoted?: string;
+  kind: RelationKind;
+  columns: CatalogColumn[];
+}
+
+export interface CatalogSchema {
+  name: string;
+  quoted?: string;
+  relations: CatalogRelation[];
+}
+
+/** What code completion knows about a database. */
+export interface CompletionCatalog {
+  /** `current_schemas(true)` on a fresh connection, in search order. */
+  searchPath: string[];
+  schemas: CatalogSchema[];
+}
+
 export interface StatementOutcome {
   index: number;
   range: TextRange;
@@ -568,6 +597,8 @@ export interface StatementOutcome {
   notices: string[];
   note: string | null;
   tx: TxState;
+  /** It may have changed what code completion knows about. */
+  changesCatalog: boolean;
 }
 
 export type QueryEvent =

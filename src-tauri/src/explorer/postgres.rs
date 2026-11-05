@@ -1,5 +1,7 @@
 //! PostgreSQL catalog queries behind the object tree.
 
+use std::collections::HashMap;
+
 use serde::Serialize;
 use sqlx::PgPool;
 
@@ -47,6 +49,139 @@ pub struct ViewInfo {
     /// Created by initdb (OID below `FirstNormalObjectId`, 16384).
     pub system_view: bool,
     pub comment: Option<String>,
+}
+
+/// What code completion knows about a database.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionCatalog {
+    /// `current_schemas(true)` on a fresh connection, in search order.
+    pub search_path: Vec<String>,
+    pub schemas: Vec<CatalogSchema>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogSchema {
+    pub name: String,
+    /// See [`CatalogColumn::quoted`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quoted: Option<String>,
+    pub relations: Vec<CatalogRelation>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogRelation {
+    pub name: String,
+    /// See [`CatalogColumn::quoted`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quoted: Option<String>,
+    pub kind: RelationKind,
+    pub columns: Vec<CatalogColumn>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum RelationKind {
+    Table,
+    View,
+    MaterializedView,
+}
+
+impl RelationKind {
+    fn from_relkind(relkind: &str) -> Self {
+        match relkind {
+            "v" => Self::View,
+            "m" => Self::MaterializedView,
+            _ => Self::Table,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogColumn {
+    pub name: String,
+    /// `quote_ident` of the name, when that isn't the name: it knows the
+    /// reserved words, which the frontend doesn't.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quoted: Option<String>,
+    pub data_type: String,
+}
+
+/// A relation row: oid, schema, name, `quoted`, relkind.
+type RelationRow = (i64, String, String, Option<String>, String);
+/// A column row: relation oid, name, `quoted`, type.
+type ColumnRow = (i64, String, Option<String>, String);
+
+/// Hangs the rows off their schemas. Rows with no parent are dropped: a query
+/// can see an object the one before it didn't, and other sessions' temp schemas
+/// aren't listed.
+fn assemble_catalog(
+    search_path: Vec<String>,
+    schemas: Vec<(String, Option<String>)>,
+    relations: Vec<RelationRow>,
+    columns: Vec<ColumnRow>,
+) -> CompletionCatalog {
+    let mut by_relation: HashMap<i64, Vec<CatalogColumn>> = HashMap::new();
+    for (oid, name, quoted, data_type) in columns {
+        by_relation.entry(oid).or_default().push(CatalogColumn { name, quoted, data_type });
+    }
+    let mut by_schema: HashMap<String, Vec<CatalogRelation>> = HashMap::new();
+    for (oid, schema, name, quoted, relkind) in relations {
+        by_schema.entry(schema).or_default().push(CatalogRelation {
+            name,
+            quoted,
+            kind: RelationKind::from_relkind(&relkind),
+            columns: by_relation.remove(&oid).unwrap_or_default(),
+        });
+    }
+    let schemas = schemas
+        .into_iter()
+        .map(|(name, quoted)| {
+            let relations = by_schema.remove(&name).unwrap_or_default();
+            CatalogSchema { name, quoted, relations }
+        })
+        .collect();
+    CompletionCatalog { search_path, schemas }
+}
+
+/// Schemas, relations and columns, in three reads through the pool, so it never
+/// touches a query tab's session. Skips TOAST and temp schemas, dropped columns
+/// and system columns.
+pub async fn completion_catalog(pool: &PgPool) -> Result<CompletionCatalog, String> {
+    let search_path = sqlx::query_scalar("SELECT current_schemas(true)::text[]").fetch_one(pool).await.map_err(err)?;
+    let schemas = sqlx::query_as(
+        "SELECT nspname::text, NULLIF(quote_ident(nspname), nspname::text)
+         FROM pg_namespace
+         WHERE nspname !~ '^pg_(toast|temp_|toast_temp_)'
+         ORDER BY nspname",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(err)?;
+    let relations = sqlx::query_as(
+        "SELECT c.oid::int8, n.nspname::text, c.relname::text,
+                NULLIF(quote_ident(c.relname), c.relname::text), c.relkind::text
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE c.relkind IN ('r', 'p', 'f', 'v', 'm')
+         ORDER BY c.relname",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(err)?;
+    let columns = sqlx::query_as(
+        "SELECT a.attrelid::int8, a.attname::text, NULLIF(quote_ident(a.attname), a.attname::text),
+                format_type(a.atttypid, a.atttypmod)
+         FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid
+         WHERE a.attnum > 0 AND NOT a.attisdropped AND c.relkind IN ('r', 'p', 'f', 'v', 'm')
+         ORDER BY a.attrelid, a.attnum",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(err)?;
+    Ok(assemble_catalog(search_path, schemas, relations, columns))
 }
 
 fn err(e: sqlx::Error) -> String {
@@ -185,6 +320,86 @@ mod tests {
     use super::*;
     use crate::connections::model::sample;
     use crate::explorer::sessions::SessionManager;
+
+    #[test]
+    fn assembles_the_catalog_and_drops_orphans() {
+        let catalog = assemble_catalog(
+            vec!["pg_catalog".into(), "public".into()],
+            vec![("Odd".into(), Some("\"Odd\"".into())), ("public".into(), None)],
+            vec![
+                (1, "public".into(), "users".into(), None, "r".into()),
+                (2, "public".into(), "v".into(), None, "v".into()),
+                (3, "Odd".into(), "m".into(), None, "m".into()),
+                (4, "pg_temp_3".into(), "gone".into(), None, "r".into()),
+            ],
+            vec![(1, "id".into(), None, "integer".into()), (1, "order".into(), Some("\"order\"".into()), "text".into()), (9, "gone".into(), None, "text".into())],
+        );
+        assert_eq!(catalog.schemas.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["Odd", "public"]);
+        assert_eq!(catalog.schemas[0].relations[0].kind, RelationKind::MaterializedView);
+        let users = &catalog.schemas[1].relations[0];
+        assert_eq!(users.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "order"]);
+        assert_eq!(catalog.schemas[1].relations[1].kind, RelationKind::View);
+        assert!(catalog.schemas[1].relations[1].columns.is_empty());
+    }
+
+    #[test]
+    fn the_catalog_leaves_out_what_it_needn_t_send() {
+        let column = CatalogColumn { name: "id".into(), quoted: None, data_type: "integer".into() };
+        let json = serde_json::to_value(&column).unwrap();
+        assert_eq!(json, serde_json::json!({ "name": "id", "dataType": "integer" }));
+        assert_eq!(serde_json::to_value(RelationKind::MaterializedView).unwrap(), "materialized-view");
+    }
+
+    /// Needs a live server; see `connections::postgres::tests::connects_to_live_server`.
+    #[tokio::test]
+    #[ignore]
+    async fn builds_the_completion_catalog_on_live_server() {
+        let port: u16 = std::env::var("HUXDB_TEST_PG_PORT").unwrap().parse().unwrap();
+        let config = crate::connections::model::ConnectionConfig { id: "live".into(), port, ..sample("live") };
+        let sessions = SessionManager::default();
+        let pool = sessions.pool(&config, "postgres");
+
+        sqlx::raw_sql(
+            "DROP SCHEMA IF EXISTS \"Huxdb Catalog\" CASCADE;
+             CREATE SCHEMA \"Huxdb Catalog\";
+             CREATE TABLE \"Huxdb Catalog\".\"order\" (id int, \"Mixed\" varchar(10), gone text, \"user\" numeric(10,2));
+             ALTER TABLE \"Huxdb Catalog\".\"order\" DROP COLUMN gone;
+             CREATE VIEW \"Huxdb Catalog\".plain_view AS SELECT 1 AS x;
+             CREATE MATERIALIZED VIEW \"Huxdb Catalog\".a_matview AS SELECT 1 AS x;
+             CREATE TEMP TABLE huxdb_temp_catalog (a int);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let catalog = completion_catalog(&pool).await.unwrap();
+        sqlx::raw_sql("DROP SCHEMA \"Huxdb Catalog\" CASCADE").execute(&pool).await.unwrap();
+
+        assert!(catalog.search_path.iter().any(|s| s == "pg_catalog"));
+        assert!(catalog.schemas.iter().all(|s| !s.name.starts_with("pg_toast") && !s.name.starts_with("pg_temp")));
+        assert!(catalog.schemas.iter().any(|s| s.name == "pg_catalog" && s.relations.iter().any(|r| r.name == "pg_class" && !r.columns.is_empty())));
+
+        let schema = catalog.schemas.iter().find(|s| s.name == "Huxdb Catalog").expect("the schema");
+        assert_eq!(schema.quoted.as_deref(), Some("\"Huxdb Catalog\""));
+        let names: Vec<_> = schema.relations.iter().map(|r| (r.name.as_str(), r.kind, r.quoted.as_deref())).collect();
+        assert_eq!(
+            names,
+            [
+                ("a_matview", RelationKind::MaterializedView, None),
+                ("order", RelationKind::Table, Some("\"order\"")),
+                ("plain_view", RelationKind::View, None),
+            ]
+        );
+        let columns: Vec<_> = schema.relations[1].columns.iter().map(|c| (c.name.as_str(), c.quoted.as_deref(), c.data_type.as_str())).collect();
+        assert_eq!(
+            columns,
+            [
+                ("id", None, "integer"),
+                ("Mixed", Some("\"Mixed\""), "character varying(10)"),
+                ("user", Some("\"user\""), "numeric(10,2)"),
+            ]
+        );
+    }
 
     /// Needs a live server; see `connections::postgres::tests::connects_to_live_server`.
     #[tokio::test]

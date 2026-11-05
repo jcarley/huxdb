@@ -11,6 +11,7 @@ import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
 import * as api from "../lib/api";
 import type { QueryEvent, RunScope, StatementOutcome, TxState } from "../lib/types";
+import { useCompletionCatalog } from "./completionCatalog";
 import type { DesignerTab } from "./tabs";
 
 /** What the panel under the editor shows: a statement's rows, by its index, or Messages. */
@@ -32,6 +33,9 @@ export interface QueryEditor {
   error: string | null;
   /** A passing message: cancelled, or the connection was lost. */
   notice: string | null;
+  /** DDL ran since completion's catalog last loaded. It waits for the transaction,
+   * because the catalog is read over another connection, which can't see it before that. */
+  catalogStale: boolean;
 }
 
 interface QueryEditorState {
@@ -73,14 +77,25 @@ export const useQueryEditor = create<QueryEditorState>((set, get) => {
       return { editors: { ...s.editors, [id]: { ...q, ...(typeof change === "function" ? change(q) : change) } } };
     });
 
-  const onEvent = (id: string, runId: number, event: QueryEvent) =>
+  const refreshStaleCatalog = (id: string) => {
+    const q = get().editors[id];
+    if (!q?.catalogStale || q.tx !== "idle") return;
+    update(id, { catalogStale: false });
+    useCompletionCatalog.getState().refresh(q.tab.connectionId, q.tab.database);
+  };
+
+  const onEvent = (id: string, runId: number, event: QueryEvent) => {
     update(id, (q) => {
       if (q.runId !== runId) return {};
       switch (event.event) {
         case "statement-started":
           return { progress: { index: event.index, total: event.total } };
         case "statement-finished":
-          return { outcomes: [...q.outcomes, event.outcome], tx: event.outcome.tx };
+          return {
+            outcomes: [...q.outcomes, event.outcome],
+            tx: event.outcome.tx,
+            catalogStale: q.catalogStale || (event.outcome.changesCatalog && !event.outcome.error),
+          };
         case "run-done":
           return {
             runId: null,
@@ -91,6 +106,8 @@ export const useQueryEditor = create<QueryEditorState>((set, get) => {
           };
       }
     });
+    if (event.event === "run-done") refreshStaleCatalog(id);
+  };
 
   return {
     editors: {},
@@ -99,7 +116,7 @@ export const useQueryEditor = create<QueryEditorState>((set, get) => {
       set((s) => ({
         editors: {
           ...s.editors,
-          [tab.id]: { tab, sql: "", runId: null, progress: null, tx: "idle", continueOnError: false, outcomes: [], view: "messages", error: null, notice: null },
+          [tab.id]: { tab, sql: "", runId: null, progress: null, tx: "idle", continueOnError: false, outcomes: [], view: "messages", error: null, notice: null, catalogStale: false },
         },
       })),
 
@@ -148,6 +165,7 @@ export const useQueryEditor = create<QueryEditorState>((set, get) => {
       try {
         await api.queryEnd(id, true);
         update(id, { tx: "idle" });
+        refreshStaleCatalog(id);
         return true;
       } catch (err) {
         // The transaction is over either way.

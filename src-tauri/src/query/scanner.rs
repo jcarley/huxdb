@@ -28,6 +28,9 @@ pub struct Info {
     pub plain_read: bool,
     /// Why huxdb won't send it, if it won't.
     pub refused: Option<&'static str>,
+    /// Creates, changes or drops objects, as far as its text shows: a `DO` block
+    /// or a function call can too, which is why completion has a manual refresh.
+    pub changes_catalog: bool,
 }
 
 /// One statement, from its first token to just past its `;`, in bytes.
@@ -117,7 +120,8 @@ impl Current {
             "LISTEN" => Some(LISTEN_REFUSED),
             _ => None,
         };
-        Info { tx: tx_effect(&self.lead), may_return_rows, plain_read, refused }
+        let changes_catalog = matches!(first, "CREATE" | "ALTER" | "DROP" | "IMPORT");
+        Info { tx: tx_effect(&self.lead), may_return_rows, plain_read, refused, changes_catalog }
     }
 }
 
@@ -528,6 +532,16 @@ mod tests {
 
     fn info(sql: &str) -> Info {
         split(sql)[0].info
+    }
+
+    #[test]
+    fn classifies_what_changes_the_catalog() {
+        for ddl in ["create table t (a int)", "CREATE INDEX ON t (a)", "alter table t add b int", "drop view v", "import foreign schema s from server f into public", "/* c */ create view v as select 1"] {
+            assert!(info(ddl).changes_catalog, "{ddl}");
+        }
+        for other in ["select 1", "insert into t values (1)", "truncate t", "comment on table t is 'x'", "set search_path = a"] {
+            assert!(!info(other).changes_catalog, "{other}");
+        }
     }
 
     #[test]

@@ -5,7 +5,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { Channel } from "@tauri-apps/api/core";
-import type { ConnectionConfig, DataPage, DataSpec, DataTarget, EditBatch, QualifiedName, QueryEvent, QueryResult, QueryTarget, RunScope, SchemaObjects, TableDesign, TableInfo, TextRange, ViewDesign, ViewInfo } from "./types";
+import type { CompletionCatalog, ConnectionConfig, DataPage, DataSpec, DataTarget, EditBatch, QualifiedName, QueryEvent, QueryResult, QueryTarget, RunScope, SchemaObjects, TableDesign, TableInfo, TextRange, ViewDesign, ViewInfo } from "./types";
 
 export const listConnections = () => invoke<ConnectionConfig[]>("list_connections");
 
@@ -28,6 +28,9 @@ export const closeConnection = (connectionId: string) => invoke<void>("close_con
 
 export const listSchemas = (connectionId: string, database: string) =>
   invoke<string[]>("list_schemas", { connectionId, database });
+
+export const completionCatalog = (connectionId: string, database: string) =>
+  invoke<CompletionCatalog>("completion_catalog", { connectionId, database });
 
 export const listSchemaObjects = (connectionId: string, database: string, schema: string) =>
   invoke<SchemaObjects>("list_schema_objects", { connectionId, database, schema });

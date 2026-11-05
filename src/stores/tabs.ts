@@ -2,6 +2,7 @@
 // designer, data editor or query.
 
 import { create } from "zustand";
+import { useCompletionCatalog } from "./completionCatalog";
 import { nodeKey } from "./explorer";
 import { isDataDirty, useDataEditor } from "./dataEditor";
 import { isQueryDirty, useQueryEditor } from "./queryEditor";
@@ -159,11 +160,13 @@ export const useTabs = create<TabsState>((set, get) => ({
 
   forgetConnection: (connectionId) => {
     for (const t of get().tabs) if (t.connectionId === connectionId) get().close(t.id);
+    useCompletionCatalog.getState().forget(connectionId);
   },
 
   schemaChanged: (ref) => {
     const key = schemaKey(ref);
     set((s) => ({ schemaVersions: { ...s.schemaVersions, [key]: (s.schemaVersions[key] ?? 0) + 1 } }));
+    useCompletionCatalog.getState().refresh(ref.connectionId, ref.database);
   },
 
   setQuitRequested: (value) => set({ quitRequested: value }),

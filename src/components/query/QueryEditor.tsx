@@ -4,8 +4,9 @@ import { closeCompletion } from "@codemirror/autocomplete";
 import { indentWithTab } from "@codemirror/commands";
 import { Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
-import { CirclePlay, OctagonX, Play, Settings2, X } from "lucide-react";
+import { CirclePlay, OctagonX, Play, RefreshCw, Settings2, X } from "lucide-react";
 import * as api from "../../lib/api";
+import { catalogKey, useCompletionCatalog } from "../../stores/completionCatalog";
 import { useQueryEditor } from "../../stores/queryEditor";
 import type { QueryEditor as Editor } from "../../stores/queryEditor";
 import { useQueryPrefs } from "../../stores/queryPrefs";
@@ -98,11 +99,12 @@ function TargetSelects({ id, editor }: { id: string; editor: Editor }) {
   );
 }
 
-/** The completion settings, shared by every query tab. */
-function CompletionMenu() {
+/** The completion settings, shared by every query tab, and this database's catalog. */
+function CompletionMenu({ connectionId, database }: { connectionId: string; database: string }) {
   const completion = useQueryPrefs((s) => s.completion);
   const upperCaseKeywords = useQueryPrefs((s) => s.upperCaseKeywords);
   const { setCompletion, setUpperCaseKeywords } = useQueryPrefs.getState();
+  const entry = useCompletionCatalog((s) => s.entries[catalogKey(connectionId, database)]);
 
   return (
     <div className="dropdown dropdown-end">
@@ -119,6 +121,17 @@ function CompletionMenu() {
           <input type="checkbox" className="checkbox checkbox-xs" checked={upperCaseKeywords} disabled={!completion} onChange={(e) => setUpperCaseKeywords(e.target.checked)} />
           Upper-case keywords
         </label>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm justify-start font-normal"
+          title="Reads this database's schemas, tables and columns again"
+          disabled={!completion || entry?.loading}
+          onClick={() => useCompletionCatalog.getState().refresh(connectionId, database)}
+        >
+          <RefreshCw className={`size-4 text-primary ${entry?.loading ? "animate-spin" : ""}`} strokeWidth={1.75} />
+          Update Code Completion
+        </button>
+        {entry?.error && <p className="whitespace-pre-wrap text-xs text-error select-text">{entry.error}</p>}
       </div>
     </div>
   );
@@ -149,7 +162,7 @@ function Toolbar({ id, editor, view }: { id: string; editor: Editor; view: () =>
       </label>
       <TargetSelects id={id} editor={editor} />
       <div className="ml-auto flex items-center gap-2 text-xs">
-        <CompletionMenu />
+        <CompletionMenu connectionId={editor.tab.connectionId} database={editor.tab.database} />
         {editor.progress && (
           <span className="text-base-content/70 tabular-nums">
             <span className="loading loading-spinner loading-xs mr-1 align-middle" />
@@ -188,13 +201,21 @@ export function QueryEditor({ id }: { id: string }) {
   const [extensions] = useState(() => queryExtensions(id));
   const completion = useQueryPrefs((s) => s.completion);
   const upperCaseKeywords = useQueryPrefs((s) => s.upperCaseKeywords);
+  const connectionId = editor?.tab.connectionId ?? "";
+  const database = editor?.tab.database ?? "";
+  const schema = editor?.tab.schema ?? "";
+  const catalog = useCompletionCatalog((s) => s.entries[catalogKey(connectionId, database)]?.catalog);
   const [panelHeight, setPanelHeight] = useState(280);
   const container = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
 
   useEffect(() => {
-    view.current?.dispatch({ effects: completionCompartment.reconfigure(completionExtension({ completion, upperCaseKeywords })) });
-  }, [completion, upperCaseKeywords]);
+    if (completion && connectionId) useCompletionCatalog.getState().ensure(connectionId, database);
+  }, [completion, connectionId, database]);
+
+  useEffect(() => {
+    view.current?.dispatch({ effects: completionCompartment.reconfigure(completionExtension({ completion, upperCaseKeywords, catalog, schema })) });
+  }, [completion, upperCaseKeywords, catalog, schema]);
 
   const startResize = (e: ReactMouseEvent) => {
     e.preventDefault();

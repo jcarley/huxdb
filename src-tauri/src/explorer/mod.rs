@@ -4,7 +4,7 @@
 mod postgres;
 pub mod sessions;
 
-use postgres::{SchemaObjects, TableInfo, ViewInfo};
+use postgres::{CompletionCatalog, SchemaObjects, TableInfo, ViewInfo};
 use sessions::SessionManager;
 use sqlx::PgPool;
 use tauri::State;
@@ -51,6 +51,18 @@ pub async fn list_schemas(
 ) -> Result<Vec<String>, String> {
     let pool = pool_for(&store, &sessions, &connection_id, Some(&database))?;
     postgres::list_schemas(&pool).await
+}
+
+/// For the query editor's completion. Goes through the pool, not the tab's session.
+#[tauri::command]
+pub async fn completion_catalog(
+    store: State<'_, ConnectionStore>,
+    sessions: State<'_, SessionManager>,
+    connection_id: String,
+    database: String,
+) -> Result<CompletionCatalog, String> {
+    let pool = pool_for(&store, &sessions, &connection_id, Some(&database))?;
+    postgres::completion_catalog(&pool).await
 }
 
 #[tauri::command]

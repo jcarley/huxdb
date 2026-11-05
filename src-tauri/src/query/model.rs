@@ -71,6 +71,8 @@ pub struct StatementOutcome {
     pub note: Option<String>,
     /// The transaction state after it.
     pub tx: TxState,
+    /// It may have changed what code completion knows about.
+    pub changes_catalog: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -120,10 +122,12 @@ mod tests {
             notices: vec![],
             note: None,
             tx: TxState::Open,
+            changes_catalog: true,
         };
         let finished = serde_json::to_value(QueryEvent::StatementFinished { outcome: Box::new(outcome) }).unwrap();
         assert_eq!(finished["event"], "statement-finished");
         assert_eq!(finished["outcome"]["elapsedMs"], 5);
+        assert_eq!(finished["outcome"]["changesCatalog"], true);
         assert_eq!(finished["outcome"]["rowsAffected"], 1);
         assert_eq!(finished["outcome"]["result"]["cancelledAtLimit"], false);
         assert_eq!(finished["outcome"]["tx"], "open");

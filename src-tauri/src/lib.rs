@@ -31,6 +31,7 @@ pub fn run() {
             explorer::close_connection,
             explorer::list_schemas,
             explorer::list_schema_objects,
+            explorer::completion_catalog,
             explorer::list_tables,
             explorer::list_views,
             designer::load_table_design,
