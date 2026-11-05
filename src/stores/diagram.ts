@@ -2,11 +2,12 @@ import { create } from "zustand";
 import { compareStructure, reportCount, resolveOids, tableKey } from "../lib/diagramDrift";
 import type { DriftReport } from "../lib/diagramDrift";
 import { captureLayout, layoutSignature, restoreLayout } from "../lib/diagramFile";
-import { dropRoutes, reshapeNodes, revealHubLines, toEdges, toNodes } from "../lib/diagramFlow";
-import type { FkEdge, TableNode } from "../lib/diagramFlow";
-import { defaultOptions, layoutDiagram, tableBox } from "../lib/diagramLayout";
+import { applyArrangement, currentArrangement, dropRoutes, reshapeNodes, revealHubLines, selectionArrangement, toEdges, toNodes } from "../lib/diagramFlow";
+import type { Arrangement, FkEdge, TableNode } from "../lib/diagramFlow";
+import { defaultOptions, keysWithin, layoutDiagram, tableBox } from "../lib/diagramLayout";
 import type { Box, Layout } from "../lib/diagramLayout";
-import { fontsReady, measureText, runElk } from "../lib/diagramBrowser";
+import { fontsReady, measureText, runElk, startLayout } from "../lib/diagramBrowser";
+import type { LayoutJob } from "../lib/diagramBrowser";
 import * as api from "../lib/api";
 import { errorMessage } from "../lib/api";
 import type { DiagramContent, DiagramForeignKey, DiagramLayoutFile, DiagramOptions, DiagramStructure, DiagramViewport, SavedDiagram } from "../lib/types";
@@ -57,6 +58,13 @@ export interface DiagramEditor {
   report: DriftReport | null;
   /** Tables changed size or arrived, or names need room, so the banner offers a new layout. */
   offerLayout: boolean;
+  /** Auto Layout is working. */
+  layingOut: boolean;
+  layoutError: string | null;
+  /** Counts whole-diagram layouts, each of which brings the result into view. */
+  layoutsDone: number;
+  /** What each Auto Layout replaced, newest last. */
+  undo: LayoutUndo[];
   /** A designer saved something in this database since it loaded. */
   outOfDate: boolean;
   /** `layoutSignature` at the last save. Null means never saved, or a change only Save can settle. */
@@ -64,6 +72,13 @@ export interface DiagramEditor {
   dirty: boolean;
   /** The file's modification time, to notice it changing behind this tab. */
   stamp: number | null;
+}
+
+/** How far back Undo reaches. */
+const UNDO_LIMIT = 20;
+
+interface LayoutUndo extends Arrangement {
+  offerLayout: boolean;
 }
 
 /** What a choice in the report adds. */
@@ -101,8 +116,13 @@ interface DiagramsState {
   /** Makes these the diagram's tables, keeping the places of those that stay. Rejects with the backend error. */
   setTables: (id: string, oids: number[]) => Promise<void>;
   setViewport: (id: string, viewport: DiagramViewport) => void;
-  /** A fresh layout of the whole diagram. */
-  autoLayout: (id: string) => Promise<void>;
+  /** Changes how Auto Layout works next, which moves nothing yet. */
+  setLayoutOptions: (id: string, change: Partial<Pick<DiagramOptions, "objectDistance" | "layoutQuality" | "groupBySchema">>) => void;
+  /** A fresh layout of these tables, or the whole diagram without any. A second call replaces a first still running. */
+  autoLayout: (id: string, nodes?: string[]) => Promise<void>;
+  cancelLayout: (id: string) => void;
+  /** Puts tables and lines back as they were before the last Auto Layout. */
+  undoLayout: (id: string) => void;
   /** Applies the report's choices and makes today's structure the snapshot. Rejects with the backend error. */
   acceptReport: (id: string, choices: ReportChoices) => Promise<void>;
   /** What Save writes. */
@@ -127,6 +147,7 @@ const drawn = (structure: DiagramStructure, layout: Layout, boxes: Map<number, B
   edges: toEdges(structure, layout),
   selection: NOTHING_SELECTED,
   hover: null,
+  undo: [],
 });
 
 const isDirty = (nodes: TableNode[], options: DiagramOptions | null, baseline: string | null) => baseline === null || layoutSignature(nodes, options ?? undefined) !== baseline;
@@ -145,6 +166,17 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
     });
   /** Each load gets a number, so a retry or a closed tab can't be overwritten by a late answer. */
   const latest = new Map<string, number>();
+  /** The running layout per tab. Replacing or removing one is what makes its late result drop. */
+  const layouts = new Map<string, LayoutJob>();
+
+  /** Anything that changes the tables stops a layout that was measured before it. */
+  const stopLayout = (id: string) => {
+    const job = layouts.get(id);
+    if (!job) return;
+    layouts.delete(id);
+    job.cancel();
+    update(id, () => ({ layingOut: false }));
+  };
 
   const blank = (connectionId: string, database: string, oids: number[]): DiagramEditor => ({
     connectionId,
@@ -164,6 +196,10 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
     hover: null,
     report: null,
     offerLayout: false,
+    layingOut: false,
+    layoutError: null,
+    layoutsDone: 0,
+    undo: [],
     outOfDate: false,
     baseline: null,
     dirty: true,
@@ -239,6 +275,7 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
     },
 
     dispose: (id) => {
+      stopLayout(id);
       latest.delete(id);
       set((s) => {
         const { [id]: _, ...diagrams } = s.diagrams;
@@ -251,6 +288,7 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
       if (!diagram) return;
       const request = (latest.get(id) ?? 0) + 1;
       latest.set(id, request);
+      stopLayout(id);
       // A refresh keeps the diagram on screen.
       update(id, (d) => ({ status: d.nodes.length ? "ready" : "loading", error: null }));
       try {
@@ -261,13 +299,16 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
       }
     },
 
-    setNodes: (id, nodes, moved, settled) =>
+    setNodes: (id, nodes, moved, settled) => {
+      // Dragging says where a table goes, which a layout finishing later shouldn't undo.
+      if (moved.size) stopLayout(id);
       update(id, (d) => ({
         nodes,
         edges: moved.size ? dropRoutes(d.edges, moved) : d.edges,
         // Only when a drag ends: comparing every table on every frame would slow the drag.
         dirty: settled ? isDirty(nodes, d.options, d.baseline) : d.dirty,
-      })),
+      }));
+    },
 
     setEdges: (id, edges) => update(id, () => ({ edges })),
 
@@ -297,6 +338,7 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
       if (!diagram?.structure || !diagram.options) return;
       const options = { ...diagram.options, ...change };
       const boxes = await measure(diagram.structure, options);
+      stopLayout(id);
       update(id, (d) => {
         const nodes = reshapeNodes(d.nodes, diagram.structure!, boxes, options);
         const resized = nodes.some((n, i) => n.width !== d.nodes[i]?.width || n.height !== d.nodes[i]?.height);
@@ -306,12 +348,15 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
           edges: movesRows(change) ? dropRoutes(d.edges, new Set(nodes.map((n) => n.id))) : d.edges,
           // Lines laid out without names have no room for them.
           offerLayout: d.offerLayout || resized || change.showRelationshipNames === true,
+          // Saved routes wouldn't meet rows that moved.
+          undo: movesRows(change) ? [] : d.undo,
           dirty: isDirty(nodes, options, d.baseline),
         };
       });
     },
 
-    removeTables: (id, nodes) =>
+    removeTables: (id, nodes) => {
+      stopLayout(id);
       update(id, (d) => {
         if (!d.structure || !d.snapshot) return {};
         const gone = new Set(nodes);
@@ -333,13 +378,16 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
           edges: d.edges.filter((e) => !gone.has(e.source) && !gone.has(e.target)),
           selection: NOTHING_SELECTED,
           hover: null,
+          undo: [],
           dirty: isDirty(left, d.options, d.baseline),
         };
-      }),
+      });
+    },
 
     setTables: async (id, oids) => {
       const diagram = get().diagrams[id];
       if (!diagram?.structure || !diagram.options) return;
+      stopLayout(id);
       const { connectionId, database, options } = diagram;
       const [candidates, structure] = await Promise.all([api.diagramCandidates(connectionId, database), api.diagramStructure(connectionId, database, oids)]);
       const boxes = await measure(structure, options);
@@ -361,20 +409,57 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
 
     setViewport: (id, viewport) => update(id, () => ({ viewport })),
 
-    autoLayout: async (id) => {
+    setLayoutOptions: (id, change) =>
+      update(id, (d) => {
+        const options = d.options && { ...d.options, ...change };
+        return { options, dirty: isDirty(d.nodes, options, d.baseline) };
+      }),
+
+    autoLayout: async (id, nodes = []) => {
       const diagram = get().diagrams[id];
       if (!diagram?.structure) return;
+      stopLayout(id);
+      const job = startLayout();
+      layouts.set(id, job);
+      update(id, () => ({ layingOut: true, layoutError: null }));
       const { structure } = diagram;
       const options = diagram.options ?? defaultOptions(structure);
-      const boxes = await measure(structure, options);
-      const layout = await layoutDiagram(structure.tables, structure.foreignKeys, boxes, runElk, options);
-      const screen = drawn(structure, layout, boxes, options);
-      update(id, (d) => ({ ...screen, offerLayout: false, dirty: isDirty(screen.nodes, d.options, d.baseline) }));
+      const chosen = new Set(nodes);
+      const tables = chosen.size ? structure.tables.filter((t) => chosen.has(String(t.oid))) : structure.tables;
+      try {
+        const boxes = await measure(structure, options);
+        const layout = await layoutDiagram(tables, keysWithin(tables, structure.foreignKeys), boxes, job.run, options);
+        if (layouts.get(id) !== job) return;
+        update(id, (d) => {
+          const undo = [...d.undo, { ...currentArrangement(d.nodes, d.edges), offerLayout: d.offerLayout }].slice(-UNDO_LIMIT);
+          const screen = chosen.size ? applyArrangement(d.nodes, d.edges, selectionArrangement(layout, d.nodes, d.edges, chosen, boxes)) : drawn(structure, layout, boxes, options);
+          return { ...screen, undo, offerLayout: chosen.size ? d.offerLayout : false, layoutsDone: d.layoutsDone + (chosen.size ? 0 : 1), dirty: isDirty(screen.nodes, d.options, d.baseline) };
+        });
+      } catch (err) {
+        if (layouts.get(id) === job) update(id, () => ({ layoutError: errorMessage(err) }));
+      } finally {
+        job.finish();
+        if (layouts.get(id) === job) {
+          layouts.delete(id);
+          update(id, () => ({ layingOut: false }));
+        }
+      }
     },
+
+    cancelLayout: stopLayout,
+
+    undoLayout: (id) =>
+      update(id, (d) => {
+        const last = d.undo[d.undo.length - 1];
+        if (!last) return {};
+        const screen = applyArrangement(d.nodes, d.edges, last);
+        return { ...screen, undo: d.undo.slice(0, -1), offerLayout: last.offerLayout, dirty: isDirty(screen.nodes, d.options, d.baseline) };
+      }),
 
     acceptReport: async (id, { add, renames }) => {
       const diagram = get().diagrams[id];
       if (!diagram?.structure) return;
+      stopLayout(id);
       const { connectionId, database, report } = diagram;
       const layout = currentLayout(diagram);
       const renamed: number[] = [];

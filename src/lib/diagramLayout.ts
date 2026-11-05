@@ -8,7 +8,7 @@
 import type { ElkExtendedEdge, ElkNode } from "elkjs/lib/elk-api";
 import type { DiagramColumn, DiagramForeignKey, DiagramOptions, DiagramStructure, DiagramTable } from "./types";
 
-export const DEFAULT_OPTIONS: DiagramOptions = { showFieldComments: false, showNotNull: false, showObjectComments: false, showSchemaNames: false, showRelationshipNames: true, fontSize: 11, blackAndWhite: false };
+export const DEFAULT_OPTIONS: DiagramOptions = { showFieldComments: false, showNotNull: false, showObjectComments: false, showSchemaNames: false, showRelationshipNames: true, fontSize: 11, blackAndWhite: false, objectDistance: 40, layoutQuality: "normal", groupBySchema: false };
 
 /** More lines than this start with their names off, because they'd crowd the diagram. */
 const NAMED_LINES_LIMIT = 60;
@@ -39,12 +39,10 @@ export function rowSuffix(column: DiagramColumn, options: DiagramOptions) {
 export const MAX_ROWS = 40;
 const MAX_WIDTH = 420;
 const SCROLLBAR = 12;
-const CLUSTER_GAP = 30;
-const LAYER_GAP = 70;
+/** Room for a line's two marks, whatever Object Distance says. */
+const MIN_LAYER_GAP = 50;
 /** Room for a name between tables, as a line's marks take the first and last 20 px. */
 const NAMED_LAYER_GAP = 160;
-const HUB_GAP = 60;
-const BLOCK_GAP = 120;
 
 export interface Box {
   width: number;
@@ -171,6 +169,36 @@ export function partition(tables: DiagramTable[], foreignKeys: DiagramForeignKey
   };
 }
 
+/** Every gap comes from Object Distance, so tables, clusters and blocks stay in proportion. */
+export const layoutGaps = ({ objectDistance: d, showRelationshipNames }: DiagramOptions) => ({
+  node: d,
+  layer: Math.max(1.5 * d, showRelationshipNames ? NAMED_LAYER_GAP : MIN_LAYER_GAP),
+  hub: 1.5 * d,
+  block: 3 * d,
+  edge: d / 4,
+});
+
+/**
+ * Object Distance and Quality as ELK's options. `thoroughness` buys time, not quality, so a third
+ * level would only be a longer wait. Every graph here is one connected cluster, so component
+ * spacing and compaction would have nothing to act on.
+ */
+export function elkOptions(options: DiagramOptions): Record<string, string> {
+  const gaps = layoutGaps(options);
+  const normal = options.layoutQuality === "normal";
+  return {
+    "elk.algorithm": "layered",
+    "elk.direction": "RIGHT",
+    "elk.separateConnectedComponents": "false",
+    "elk.layered.thoroughness": normal ? "7" : "1",
+    ...(normal ? { "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX" } : {}),
+    "elk.spacing.nodeNode": String(gaps.node),
+    "elk.layered.spacing.nodeNodeBetweenLayers": String(gaps.layer),
+    "elk.layered.spacing.edgeNodeBetweenLayers": String(gaps.edge),
+    "elk.layered.spacing.edgeEdgeBetweenLayers": String(gaps.edge),
+  };
+}
+
 /** ELK's graph for one cluster, with a fixed port where each foreign key meets its column. */
 export function clusterGraph(cluster: DiagramTable[], foreignKeys: DiagramForeignKey[], boxes: Map<number, Box>, options = DEFAULT_OPTIONS): ElkNode {
   const members = new Map(cluster.map((t) => [t.oid, t]));
@@ -197,16 +225,7 @@ export function clusterGraph(cluster: DiagramTable[], foreignKeys: DiagramForeig
     }));
   return {
     id: "cluster",
-    layoutOptions: {
-      "elk.algorithm": "layered",
-      "elk.direction": "RIGHT",
-      "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
-      "elk.separateConnectedComponents": "false",
-      "elk.spacing.nodeNode": String(CLUSTER_GAP),
-      "elk.layered.spacing.nodeNodeBetweenLayers": String(options.showRelationshipNames ? NAMED_LAYER_GAP : LAYER_GAP),
-      "elk.spacing.edgeNode": "20",
-      "elk.spacing.edgeEdge": "8",
-    },
+    layoutOptions: elkOptions(options),
     children: cluster.map((t) => ({
       id: String(t.oid),
       ...boxes.get(t.oid)!,
@@ -222,8 +241,65 @@ interface Block extends Box {
   routes: { id: number; points: Point[] }[];
 }
 
-export async function layoutDiagram(tables: DiagramTable[], foreignKeys: DiagramForeignKey[], boxes: Map<number, Box>, run: RunLayout, options = DEFAULT_OPTIONS): Promise<Layout> {
+/** The foreign keys with both ends among these tables, which is all `partition` can take. */
+export const keysWithin = (tables: DiagramTable[], foreignKeys: DiagramForeignKey[]) => {
+  const oids = new Set(tables.map((t) => t.oid));
+  return foreignKeys.filter((fk) => oids.has(fk.childOid) && oids.has(fk.parentOid));
+};
+
+/** The corner and size of what's placed. */
+export function bounds(positions: Iterable<[number, Point]>, boxes: Map<number, Box>) {
+  let [left, top, right, bottom] = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const [oid, { x, y }] of positions) {
+    const box = boxes.get(oid)!;
+    left = Math.min(left, x);
+    top = Math.min(top, y);
+    right = Math.max(right, x + box.width);
+    bottom = Math.max(bottom, y + box.height);
+  }
+  return left === Infinity ? { x: 0, y: 0, width: 0, height: 0 } : { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+const moved = (points: Point[], dx: number, dy: number) => points.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+
+/** A layout with its corner at `corner`, routes included. */
+export function placedAt({ positions, routes, hubEdges }: Layout, boxes: Map<number, Box>, corner: Point): Layout {
+  const { x, y } = bounds(positions, boxes);
+  const [dx, dy] = [corner.x - x, corner.y - y];
+  return {
+    positions: new Map([...positions].map(([oid, p]) => [oid, { x: p.x + dx, y: p.y + dy }])),
+    routes: new Map([...routes].map(([id, points]) => [id, moved(points, dx, dy)])),
+    hubEdges,
+  };
+}
+
+/** Each schema laid out alone, then packed. A line between schemas has no route, so it draws the plain path. */
+async function layoutBySchema(tables: DiagramTable[], foreignKeys: DiagramForeignKey[], boxes: Map<number, Box>, run: RunLayout, options: DiagramOptions): Promise<Layout> {
+  const schemas = new Map<string, DiagramTable[]>();
+  for (const table of tables) schemas.set(table.schema, [...(schemas.get(table.schema) ?? []), table]);
+
+  const parts: Layout[] = [];
+  for (const group of schemas.values()) parts.push(await layoutTables(group, keysWithin(group, foreignKeys), boxes, run, options));
+  const { corners } = shelves(parts.map((part) => bounds(part.positions, boxes)), layoutGaps(options).block * 2);
+
+  // Hubs are the whole diagram's, as they are after a save, whatever each schema made of them.
+  const { hubEdges } = partition(tables, foreignKeys);
+  const positions: Layout["positions"] = new Map();
+  const routes: Layout["routes"] = new Map();
+  parts.forEach((part, i) => {
+    const placed = placedAt(part, boxes, corners[i]);
+    for (const [oid, point] of placed.positions) positions.set(oid, point);
+    for (const [id, points] of placed.routes) if (!hubEdges.has(id)) routes.set(id, points);
+  });
+  return { positions, routes, hubEdges };
+}
+
+export const layoutDiagram = (tables: DiagramTable[], foreignKeys: DiagramForeignKey[], boxes: Map<number, Box>, run: RunLayout, options = DEFAULT_OPTIONS): Promise<Layout> =>
+  (options.groupBySchema ? layoutBySchema : layoutTables)(tables, foreignKeys, boxes, run, options);
+
+async function layoutTables(tables: DiagramTable[], foreignKeys: DiagramForeignKey[], boxes: Map<number, Box>, run: RunLayout, options: DiagramOptions): Promise<Layout> {
   const { hubs, clusters, loners, inner, hubEdges } = partition(tables, foreignKeys);
+  const gaps = layoutGaps(options);
   const grid = (group: DiagramTable[], gap: number): Block => {
     const packed = shelves(group.map((t) => boxes.get(t.oid)!), gap);
     return { width: packed.width, height: packed.height, items: group.map((t, i) => ({ oid: t.oid, ...packed.corners[i] })), routes: [] };
@@ -242,10 +318,10 @@ export async function layoutDiagram(tables: DiagramTable[], foreignKeys: Diagram
       }),
     });
   }
-  for (const group of loners) blocks.push(grid(group, CLUSTER_GAP));
-  if (hubs.length) blocks.push(grid(hubs, HUB_GAP));
+  for (const group of loners) blocks.push(grid(group, gaps.node));
+  if (hubs.length) blocks.push(grid(hubs, gaps.hub));
 
-  const { corners } = shelves(blocks, BLOCK_GAP);
+  const { corners } = shelves(blocks, gaps.block);
   const positions: Layout["positions"] = new Map();
   const routes: Layout["routes"] = new Map();
   blocks.forEach((block, i) => {

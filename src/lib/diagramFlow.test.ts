@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dropRoutes, foreignKeyRule, matchLabel, reshapeNodes, revealHubLines, toEdges, toNodes } from "./diagramFlow";
+import { applyArrangement, currentArrangement, dropRoutes, foreignKeyRule, matchLabel, reshapeNodes, revealHubLines, selectionArrangement, toEdges, toNodes } from "./diagramFlow";
 import { DEFAULT_OPTIONS, headerHeight, MAX_ROWS, rowHeight } from "./diagramLayout";
 import type { Box, Layout } from "./diagramLayout";
 import type { DiagramForeignKey, DiagramStructure, DiagramTable } from "./types";
@@ -150,6 +150,46 @@ describe("revealHubLines", () => {
     const t = { tables: [table(1), table(2)], foreignKeys: [fk(1, 1, 2)] };
     const plain = toEdges(t, layoutOf(t));
     expect(revealHubLines(plain, new Set())).toBe(plain);
+  });
+});
+
+describe("arrangements", () => {
+  const s = { tables: [table(1), table(2), table(3)], foreignKeys: [fk(1, 1, 2), fk(2, 2, 3), fk(3, 3, 1)] };
+  const sized = boxes(s);
+  const nodes = toNodes(s, layoutOf(s), sized);
+  const edges = toEdges(s, layoutOf(s));
+
+  it("puts back what was captured", () => {
+    const saved = currentArrangement(nodes, edges);
+    const moved = { nodes: nodes.map((n) => ({ ...n, position: { x: 0, y: 0 } })), edges: dropRoutes(edges, new Set(["1"])) };
+    const back = applyArrangement(moved.nodes, moved.edges, saved);
+    expect(back.nodes.map((n) => n.position)).toEqual(nodes.map((n) => n.position));
+    expect(back.edges[0].data?.points).toEqual([{ x: 5, y: 5 }]);
+  });
+
+  it("changes only what's listed, keeping selection", () => {
+    const selected = nodes.map((n) => ({ ...n, selected: true }));
+    const { nodes: next, edges: lines } = applyArrangement(selected, edges, { positions: new Map([["1", { x: 9, y: 9 }]]), routes: new Map([["1", undefined]]) });
+    expect(next[0]).toMatchObject({ position: { x: 9, y: 9 }, selected: true });
+    expect(next[1].position).toEqual(nodes[1].position);
+    expect(lines[0].data?.points).toBeUndefined();
+    expect(lines[0].data?.name).toBe("fk1");
+  });
+
+  it("moves a selection's layout to its corner, routes included, and lets lines leaving it fall back", () => {
+    const layout = { positions: new Map([[1, { x: 0, y: 0 }], [2, { x: 500, y: 0 }]]), routes: new Map([[1, [{ x: 250, y: 0 }]]]), hubEdges: new Set<number>() };
+    const placed = selectionArrangement(layout, nodes, edges, new Set(["1", "2"]), sized);
+    expect(placed.positions.get("1")).toEqual({ x: 10, y: 0 });
+    expect(placed.positions.get("2")).toEqual({ x: 510, y: 0 });
+    expect(placed.routes.get("1")).toEqual([{ x: 260, y: 0 }]);
+    expect(placed.routes.has("2")).toBe(true);
+    expect(placed.routes.get("2")).toBeUndefined();
+  });
+
+  it("gives no route to a line the whole diagram treats as a hub's", () => {
+    const hubbed = toEdges(s, layoutOf(s, [1]));
+    const layout = { positions: new Map([[1, { x: 0, y: 0 }], [2, { x: 500, y: 0 }]]), routes: new Map([[1, [{ x: 250, y: 0 }]]]), hubEdges: new Set<number>() };
+    expect(selectionArrangement(layout, nodes, hubbed, new Set(["1", "2"]), sized).routes.get("1")).toBeUndefined();
   });
 });
 

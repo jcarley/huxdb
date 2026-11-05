@@ -1,7 +1,7 @@
 import type { ElkExtendedEdge, ElkNode } from "elkjs/lib/elk-api";
 import { describe, expect, it } from "vitest";
-import { clusterGraph, columnOffset, DEFAULT_OPTIONS, defaultOptions, headerHeight, hubLimit, layoutDiagram, MAX_ROWS, partition, rowHeight, rowsTop, rowSuffix, shelves, tableBox } from "./diagramLayout";
-import type { Box } from "./diagramLayout";
+import { bounds, clusterGraph, columnOffset, DEFAULT_OPTIONS, defaultOptions, elkOptions, headerHeight, hubLimit, keysWithin, layoutDiagram, layoutGaps, MAX_ROWS, partition, placedAt, rowHeight, rowsTop, rowSuffix, shelves, tableBox } from "./diagramLayout";
+import type { RunLayout, Box } from "./diagramLayout";
 import type { DiagramForeignKey, DiagramTable } from "./types";
 
 const HEADER = headerHeight(DEFAULT_OPTIONS);
@@ -179,6 +179,95 @@ it("starts a crowded diagram with its relationship names off", () => {
   const tables = [table(1), table(2)];
   expect(defaultOptions({ tables, foreignKeys: Array.from({ length: 60 }, () => fk(1, 2)) }).showRelationshipNames).toBe(true);
   expect(defaultOptions({ tables, foreignKeys: Array.from({ length: 61 }, () => fk(1, 2)) }).showRelationshipNames).toBe(false);
+});
+
+describe("elkOptions", () => {
+  const named = { ...DEFAULT_OPTIONS, showRelationshipNames: false };
+
+  it("maps Object Distance to spacing", () => {
+    expect(elkOptions({ ...named, objectDistance: 80 })).toMatchObject({
+      "elk.spacing.nodeNode": "80",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "120",
+      "elk.layered.spacing.edgeNodeBetweenLayers": "20",
+      "elk.layered.spacing.edgeEdgeBetweenLayers": "20",
+    });
+  });
+
+  it("keeps room for a line's marks at the smallest distance, and for names", () => {
+    expect(layoutGaps({ ...named, objectDistance: 20 }).layer).toBe(50);
+    expect(layoutGaps({ ...named, objectDistance: 20, showRelationshipNames: true }).layer).toBe(160);
+    expect(layoutGaps({ ...named, objectDistance: 120, showRelationshipNames: true }).layer).toBe(180);
+  });
+
+  it("scales the gaps between clusters and blocks too", () => {
+    expect(layoutGaps({ ...named, objectDistance: 60 })).toMatchObject({ node: 60, hub: 90, block: 180 });
+  });
+
+  it("sets Quality's two levels", () => {
+    const normal = elkOptions(named);
+    expect(normal).toMatchObject({ "elk.layered.thoroughness": "7", "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX" });
+    const draft = elkOptions({ ...named, layoutQuality: "draft" });
+    expect(draft["elk.layered.thoroughness"]).toBe("1");
+    expect(draft).not.toHaveProperty(["elk.layered.nodePlacement.strategy"]);
+  });
+});
+
+describe("placing a layout", () => {
+  const boxes = new Map([[1, { width: 100, height: 50 }], [2, { width: 40, height: 200 }]]);
+
+  it("measures what's placed, and copes with nothing", () => {
+    expect(bounds([[1, { x: 10, y: 20 }], [2, { x: 90, y: 0 }]], boxes)).toEqual({ x: 10, y: 0, width: 120, height: 200 });
+    expect(bounds([], boxes)).toEqual({ x: 0, y: 0, width: 0, height: 0 });
+  });
+
+  it("moves positions and routes by the same amount", () => {
+    const layout = { positions: new Map([[1, { x: 10, y: 20 }]]), routes: new Map([[5, [{ x: 15, y: 25 }]]]), hubEdges: new Set<number>() };
+    const placed = placedAt(layout, boxes, { x: 100, y: 100 });
+    expect(placed.positions.get(1)).toEqual({ x: 100, y: 100 });
+    expect(placed.routes.get(5)).toEqual([{ x: 105, y: 105 }]);
+  });
+});
+
+it("keeps only keys with both ends among the tables", () => {
+  const inside = fk(1, 2);
+  expect(keysWithin([table(1), table(2)], [inside, fk(1, 3), fk(3, 1)])).toEqual([inside]);
+});
+
+describe("Group by Schema", () => {
+  const inSchema = (oid: number, schema: string) => ({ ...table(oid), schema });
+  const tables = [inSchema(1, "a"), inSchema(2, "a"), inSchema(3, "b"), inSchema(4, "b")];
+  const fks = [fk(1, 2), fk(3, 4), fk(1, 3)];
+  const run = (async (graph) => ({ ...graph, width: 300, height: 100, children: graph.children!.map((c, i) => ({ ...c, x: i * 200, y: 0 })), edges: (graph.edges ?? []).map((e) => ({ ...e, sections: [{ bendPoints: [{ x: 1, y: 1 }] }] })) })) as RunLayout;
+  const grouped = { ...DEFAULT_OPTIONS, groupBySchema: true };
+
+  it("lays each schema out alone, with no route between them", async () => {
+    const graphs: string[][] = [];
+    const spy: RunLayout = (graph) => {
+      graphs.push(graph.children!.map((c) => c.id));
+      return run(graph);
+    };
+    const { positions, routes } = await layoutDiagram(tables, fks, sizes(tables), spy, grouped);
+    expect(graphs).toEqual([["1", "2"], ["3", "4"]]);
+    expect(positions.size).toBe(4);
+    expect(routes.has(fks[0].oid) && routes.has(fks[1].oid)).toBe(true);
+    expect(routes.has(fks[2].oid)).toBe(false);
+  });
+
+  it("keeps schemas apart by twice the block gap", async () => {
+    const { positions } = await layoutDiagram(tables, fks, sizes(tables), run, grouped);
+    const box = (oids: number[]) => bounds(oids.map((oid) => [oid, positions.get(oid)!]), sizes(tables));
+    const [a, b] = [box([1, 2]), box([3, 4])];
+    const apart = Math.max(b.x - (a.x + a.width), a.x - (b.x + b.width), b.y - (a.y + a.height), a.y - (b.y + b.height));
+    expect(apart).toBeGreaterThanOrEqual(layoutGaps(grouped).block * 2);
+  });
+
+  it("takes hubs from the whole diagram, as a reopened file does", async () => {
+    const many = [inSchema(1, "a"), ...Array.from({ length: 12 }, (_, i) => inSchema(i + 2, "b"))];
+    const keys = many.slice(1).map((t) => fk(t.oid, 1));
+    const { hubEdges, routes } = await layoutDiagram(many, keys, sizes(many), run, grouped);
+    expect(hubEdges).toEqual(partition(many, keys).hubEdges);
+    for (const id of hubEdges) expect(routes.has(id)).toBe(false);
+  });
 });
 
 describe("clusterGraph", () => {

@@ -5,6 +5,36 @@ import type { DiagramColumn, DiagramStructure, DiagramTable, SavedDiagram } from
 import { DEFAULT_OPTIONS } from "../lib/diagramLayout";
 import { useDiagrams } from "./diagram";
 
+/** Places tables in a row. With `hold`, a job waits until `release`, as a slow worker would. */
+const elk = vi.hoisted(() => {
+  type Graph = { children: { id: string }[] };
+  const place = (graph: Graph, step: number) => ({ ...graph, width: 100, height: 100, children: graph.children.map((c, i) => ({ ...c, x: i * step, y: 0 })) });
+  const state = {
+    hold: false,
+    step: 300,
+    waiting: [] as (() => void)[],
+    finished: 0,
+    start: () => {
+      let reject: ((e: Error) => void) | null = null;
+      return {
+        run: (graph: Graph) =>
+          new Promise((resolve, fail) => {
+            reject = fail;
+            const answer = place(graph, state.step);
+            if (state.hold) state.waiting.push(() => resolve(answer));
+            else resolve(answer);
+          }),
+        cancel: () => reject?.(new Error("Layout cancelled")),
+        finish: () => void state.finished++,
+      };
+    },
+    release: () => {
+      for (const go of state.waiting.splice(0)) go();
+    },
+  };
+  return state;
+});
+
 vi.mock("../lib/api", () => ({
   diagramStructure: vi.fn(),
   diagramCandidates: vi.fn(),
@@ -14,6 +44,7 @@ vi.mock("../lib/diagramBrowser", () => ({
   fontsReady: async () => {},
   measureText: (text: string) => text.length * 6,
   runElk: async (graph: { children: { id: string }[] }) => ({ ...graph, width: 100, height: 100, children: graph.children.map((c) => ({ ...c, x: 0, y: 0 })) }),
+  startLayout: () => elk.start(),
 }));
 
 const column = (name: string, more: Partial<DiagramColumn> = {}): DiagramColumn => ({ name, dataType: "bigint", notNull: false, primaryKey: false, comment: null, ...more });
@@ -333,6 +364,133 @@ describe("options", () => {
     expect(editor().edges[0].data?.points).toHaveLength(1);
     await store().setOptions("t", { fontSize: 14 });
     expect(editor().edges[0].data?.points).toBeUndefined();
+  });
+});
+
+describe("auto layout", () => {
+  const key = (oid: number, childOid: number, parentOid: number) => ({ oid, name: `fk${oid}`, childOid, parentOid, childColumns: ["id"], parentColumns: ["id"], childPartition: null, parentPartition: null, matchType: "s", onUpdate: "a", onDelete: "a", childRequiresParent: false, uniqueVia: null, validated: true, enforced: true });
+  const s: DiagramStructure = { tables: [table(1, "a"), table(2, "b"), table(3, "c")], foreignKeys: [key(7, 1, 2), key(8, 2, 3)] };
+  const places = () => Object.fromEntries(editor().nodes.map((n) => [n.id, n.position]));
+  const opened = async () => {
+    database(s);
+    await openSaved(savedDiagram(s));
+  };
+
+  beforeEach(() => {
+    Object.assign(elk, { hold: false, step: 300, finished: 0 });
+    elk.waiting.length = 0;
+  });
+
+  it("moves everything, and Undo puts it back and cleans the tab", async () => {
+    await opened();
+    const before = places();
+    await store().autoLayout("t");
+    expect(places()).not.toEqual(before);
+    expect(editor()).toMatchObject({ dirty: true, layingOut: false, offerLayout: false });
+    store().undoLayout("t");
+    expect(places()).toEqual(before);
+    expect(editor().dirty).toBe(false);
+    expect(editor().undo).toEqual([]);
+  });
+
+  it("brings a whole layout into view, but leaves the view alone for a selection", async () => {
+    await opened();
+    await store().autoLayout("t");
+    expect(editor().layoutsDone).toBe(1);
+    await store().autoLayout("t", ["1", "2"]);
+    expect(editor().layoutsDone).toBe(1);
+  });
+
+  it("undoes one layout at a time, routes and the banner's offer included", async () => {
+    await opened();
+    await store().setOptions("t", { fontSize: 16 });
+    const offered = places();
+    await store().autoLayout("t");
+    expect(editor().offerLayout).toBe(false);
+    const first = places();
+    elk.step = 500;
+    await store().autoLayout("t");
+    store().undoLayout("t");
+    expect(places()).toEqual(first);
+    store().undoLayout("t");
+    expect(places()).toEqual(offered);
+    expect(editor().offerLayout).toBe(true);
+  });
+
+  it("leaves other tables alone, keeps the selection's corner, and drops lines leaving it", async () => {
+    await opened();
+    await store().autoLayout("t");
+    const edges = editor().edges.map((e) => ({ ...e, data: { ...e.data!, points: [{ x: 1, y: 1 }] } }));
+    store().setEdges("t", edges);
+    const before = places();
+    elk.step = 900;
+    await store().autoLayout("t", ["1", "2"]);
+    const after = places();
+    expect(after["3"]).toEqual(before["3"]);
+    expect(Math.min(after["1"].x, after["2"].x)).toBe(Math.min(before["1"].x, before["2"].x));
+    expect(Math.abs(after["2"].x - after["1"].x)).toBe(900);
+    const line = (id: string) => editor().edges.find((e) => e.id === id)?.data?.points;
+    expect(line("8")).toBeUndefined();
+    expect(line("7")).not.toEqual([{ x: 1, y: 1 }]);
+  });
+
+  it("lets a second layout replace the first, whose late result is dropped", async () => {
+    await opened();
+    elk.hold = true;
+    const first = store().autoLayout("t");
+    await settled();
+    expect(editor().layingOut).toBe(true);
+    elk.step = 500;
+    const second = store().autoLayout("t");
+    await settled();
+    await first;
+    expect(editor().layingOut).toBe(true);
+    elk.release();
+    await second;
+    expect(editor().layingOut).toBe(false);
+    expect(editor().undo).toHaveLength(1);
+    expect(Object.values(places()).map((p) => p.x).sort((a, b) => a - b)).toEqual([0, 500, 1000]);
+  });
+
+  it("changes nothing when cancelled, and reports no error", async () => {
+    await opened();
+    const before = places();
+    elk.hold = true;
+    const run = store().autoLayout("t");
+    await settled();
+    store().cancelLayout("t");
+    await run;
+    expect(places()).toEqual(before);
+    expect(editor()).toMatchObject({ layingOut: false, layoutError: null, undo: [] });
+  });
+
+  it("stops when a table is dragged, so a late result can't undo the drag", async () => {
+    await opened();
+    elk.hold = true;
+    const run = store().autoLayout("t");
+    await settled();
+    store().setNodes("t", editor().nodes, new Set(["1"]), false);
+    await run;
+    expect(editor().layingOut).toBe(false);
+    expect(editor().undo).toEqual([]);
+  });
+
+  it("forgets what it could undo once the tables change", async () => {
+    await opened();
+    await store().autoLayout("t");
+    store().removeTables("t", ["3"]);
+    expect(editor().undo).toEqual([]);
+  });
+
+  it("saves its settings without moving anything", async () => {
+    await opened();
+    const before = places();
+    store().setLayoutOptions("t", { objectDistance: 80, groupBySchema: true });
+    expect(places()).toEqual(before);
+    expect(editor().dirty).toBe(true);
+    expect(store().content("t")?.layout.options).toMatchObject({ objectDistance: 80, groupBySchema: true });
+    store().setLayoutOptions("t", { objectDistance: DEFAULT_OPTIONS.objectDistance, groupBySchema: false });
+    expect(editor().dirty).toBe(false);
   });
 });
 

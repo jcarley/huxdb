@@ -4,7 +4,7 @@
 import type { Edge, Node } from "@xyflow/react";
 import { childEnd, lineKind, parentEnd } from "./diagramCardinality";
 import type { ChildEnd, LineKind, ParentEnd } from "./diagramCardinality";
-import { columnOffset, DEFAULT_OPTIONS, rowHeight } from "./diagramLayout";
+import { bounds, columnOffset, DEFAULT_OPTIONS, placedAt, rowHeight } from "./diagramLayout";
 import type { Box, Layout, Point } from "./diagramLayout";
 import type { DiagramForeignKey, DiagramOptions, DiagramStructure, DiagramTable } from "./types";
 
@@ -107,6 +107,41 @@ export function reshapeNodes(nodes: TableNode[], structure: DiagramStructure, bo
   const redrawn = toNodes(structure, { positions, routes: new Map(), hubEdges: new Set() }, boxes, options);
   const selected = new Set(nodes.flatMap((n) => (n.selected ? [n.id] : [])));
   return redrawn.map((n) => (selected.has(n.id) ? { ...n, selected: true } : n));
+}
+
+/** Where tables and lines are, for undo. Only what's listed is changed when it's applied. */
+export interface Arrangement {
+  positions: Map<string, Point>;
+  /** Undefined clears a line's route, so it draws the plain path. */
+  routes: Map<string, Point[] | undefined>;
+}
+
+export const currentArrangement = (nodes: TableNode[], edges: FkEdge[]): Arrangement => ({
+  positions: new Map(nodes.map((n) => [n.id, n.position])),
+  routes: new Map(edges.map((e) => [e.id, e.data?.points])),
+});
+
+export function applyArrangement(nodes: TableNode[], edges: FkEdge[], { positions, routes }: Arrangement) {
+  return {
+    nodes: nodes.map((n) => {
+      const position = positions.get(n.id);
+      return position ? { ...n, position } : n;
+    }),
+    edges: edges.map((e) => (e.data && routes.has(e.id) ? { ...e, data: { ...e.data, points: routes.get(e.id) } } : e)),
+  };
+}
+
+/**
+ * A layout of the selected tables alone, moved back to where they were. A line leaving the
+ * selection loses its route, as it would if its table were dragged.
+ */
+export function selectionArrangement(layout: Layout, nodes: TableNode[], edges: FkEdge[], chosen: Set<string>, boxes: Map<number, Box>): Arrangement {
+  const current = nodes.flatMap((n) => (chosen.has(n.id) ? [[Number(n.id), n.position] as [number, Point]] : []));
+  const { positions, routes } = placedAt(layout, boxes, bounds(current, boxes));
+  return {
+    positions: new Map([...positions].map(([oid, point]) => [String(oid), point])),
+    routes: new Map(edges.filter((e) => chosen.has(e.source) || chosen.has(e.target)).map((e) => [e.id, e.data?.hub ? undefined : routes.get(Number(e.id))])),
+  };
 }
 
 /** ELK has no routing-only pass, so a moved table's lines fall back to a plain path rather than keep a stale route. */

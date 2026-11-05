@@ -2,12 +2,13 @@ import "@fontsource/inter/400.css";
 import "@fontsource/inter/600.css";
 import { applyEdgeChanges, applyNodeChanges, Background, ReactFlow, ReactFlowProvider, useNodesInitialized, useReactFlow, useUpdateNodeInternals } from "@xyflow/react";
 import type { EdgeChange, EdgeMouseHandler, NodeChange, NodeMouseHandler, OnSelectionChangeParams, Viewport } from "@xyflow/react";
-import { ListPlus, RefreshCw, Save, SaveAll } from "lucide-react";
-import { useCallback, useEffect, useRef } from "react";
+import { ChevronDown, ListPlus, Network, RefreshCw, Save, SaveAll, Undo2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { reportCount } from "../../lib/diagramDrift";
 import type { DriftReport } from "../../lib/diagramDrift";
 import type { FkEdge, TableNode } from "../../lib/diagramFlow";
+import type { DiagramLayoutQuality } from "../../lib/types";
 import { MAX_ZOOM, MIN_ZOOM, stepZoom } from "../../lib/diagramZoom";
 import { useDiagrams } from "../../stores/diagram";
 import { useSavedDiagrams } from "../../stores/savedDiagrams";
@@ -24,6 +25,16 @@ import { Pane } from "./Pane";
 import { PropertiesPane } from "./PropertiesPane";
 import { TableBox } from "./TableBox";
 
+/** A layout quicker than this isn't worth a flash of progress. */
+const PROGRESS_AFTER_MS = 1000;
+const DISTANCES = [20, 30, 40, 60, 80, 120];
+const QUALITIES: { value: DiagramLayoutQuality; label: string }[] = [
+  { value: "draft", label: "Draft" },
+  { value: "normal", label: "Normal" },
+];
+
+const FIT = { minZoom: MIN_ZOOM, maxZoom: 1, padding: 0.03 };
+
 const nodeTypes = { table: TableBox };
 const edgeTypes = { fk: FkLine };
 
@@ -35,6 +46,7 @@ function Canvas({ id }: { id: string }) {
   const edges = useDiagrams((s) => s.diagrams[id]?.edges);
   const options = useDiagrams((s) => s.diagrams[id]?.options);
   const structure = useDiagrams((s) => s.diagrams[id]?.structure);
+  const layoutsDone = useDiagrams((s) => s.diagrams[id]?.layoutsDone);
   const active = useTabs((s) => s.activeId === id);
   const openMenu = useContextMenu((s) => s.open);
   const flow = useReactFlow();
@@ -48,8 +60,13 @@ function Canvas({ id }: { id: string }) {
     placed.current = true;
     const saved = useDiagrams.getState().diagrams[id]?.viewport;
     if (saved) void flow.setViewport(saved);
-    else void flow.fitView({ minZoom: MIN_ZOOM, maxZoom: 1, padding: 0.03 });
+    else void flow.fitView(FIT);
   }, [active, flow, id, measured]);
+
+  // A layout can send everything out of view, leaving only the mini-map to say where it went.
+  useEffect(() => {
+    if (layoutsDone) void flow.fitView(FIT);
+  }, [flow, layoutsDone]);
 
   // Options and new foreign keys change handles without always resizing a node, which React Flow wouldn't notice.
   useEffect(() => {
@@ -125,12 +142,14 @@ function Banner({ id }: { id: string }) {
   const report = useDiagrams((s) => s.diagrams[id]?.report);
   const outOfDate = useDiagrams((s) => s.diagrams[id]?.outOfDate);
   const offerLayout = useDiagrams((s) => s.diagrams[id]?.offerLayout);
+  const layoutError = useDiagrams((s) => s.diagrams[id]?.layoutError);
   const { load, autoLayout } = useDiagrams.getState();
-  if (!outOfDate && !offerLayout && !(report && reportCount(report))) return null;
+  if (!outOfDate && !offerLayout && !layoutError && !(report && reportCount(report))) return null;
 
   return (
     <div role="status" className="flex flex-wrap items-center gap-2 border-b border-base-300 bg-base-200 px-3 py-1.5 text-sm">
-      {outOfDate ? <span>This database changed since the diagram loaded.</span> : report ? <span>{summary(report)} since this diagram was saved.</span> : <span>The layout no longer fits what this diagram shows.</span>}
+      {layoutError && <span className="text-error select-text">Auto Layout failed: {layoutError}</span>}
+      {outOfDate ? <span>This database changed since the diagram loaded.</span> : report ? <span>{summary(report)} since this diagram was saved.</span> : offerLayout ? <span>The layout no longer fits what this diagram shows.</span> : null}
       {outOfDate && (
         <button type="button" className="btn btn-xs" onClick={() => void load(id)}>
           Refresh
@@ -147,6 +166,85 @@ function Banner({ id }: { id: string }) {
         </button>
       )}
     </div>
+  );
+}
+
+/** What Auto Layout does next. Saved with the diagram. */
+function LayoutMenu({ id }: { id: string }) {
+  const options = useDiagrams((s) => s.diagrams[id]?.options);
+  const { setLayoutOptions } = useDiagrams.getState();
+  if (!options) return null;
+  return (
+    <div className="dropdown">
+      <button type="button" tabIndex={0} className="btn btn-ghost btn-xs px-0.5" aria-label="Auto Layout options" title="Auto Layout options">
+        <ChevronDown className="size-3" />
+      </button>
+      <div tabIndex={0} className="dropdown-content z-300 w-56 rounded-box border border-base-300 bg-base-100 p-3 text-sm shadow-lg">
+        <label className="mb-2 flex items-center justify-between gap-2">
+          Object distance
+          <select className="select select-xs w-20" value={options.objectDistance} onChange={(e) => setLayoutOptions(id, { objectDistance: Number(e.target.value) })}>
+            {[...new Set([...DISTANCES, options.objectDistance])].sort((a, b) => a - b).map((distance) => (
+              <option key={distance} value={distance}>
+                {distance}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="mb-2 flex items-center justify-between gap-2">
+          Quality
+          <select className="select select-xs w-20" value={options.layoutQuality} onChange={(e) => setLayoutOptions(id, { layoutQuality: e.target.value as DiagramLayoutQuality })}>
+            {QUALITIES.map(({ value, label }) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-2">
+          <input type="checkbox" className="checkbox checkbox-xs" checked={options.groupBySchema} onChange={(e) => setLayoutOptions(id, { groupBySchema: e.target.checked })} />
+          Group by schema
+        </label>
+      </div>
+    </div>
+  );
+}
+
+/** Stays quiet for a quick layout, and offers a way out of a slow one. */
+function LayoutProgress({ id }: { id: string }) {
+  const running = useDiagrams((s) => s.diagrams[id]?.layingOut);
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    if (!running) return;
+    const timer = setTimeout(() => setSlow(true), PROGRESS_AFTER_MS);
+    return () => {
+      clearTimeout(timer);
+      setSlow(false);
+    };
+  }, [running]);
+  if (!running || !slow) return null;
+  return (
+    <span role="status" className="flex items-center gap-2 text-xs text-base-content/70">
+      <span className="loading loading-spinner loading-xs" /> Laying out…
+      <button type="button" className="btn btn-xs" onClick={() => useDiagrams.getState().cancelLayout(id)}>
+        Cancel
+      </button>
+    </span>
+  );
+}
+
+/** Acts on the selection, or on everything when nothing's selected. One table has nothing to be arranged against. */
+function LayoutButtons({ id }: { id: string }) {
+  const selected = useDiagrams((s) => s.diagrams[id]?.selection.nodes);
+  const canUndo = useDiagrams((s) => !!s.diagrams[id]?.undo.length);
+  const count = selected?.length ?? 0;
+  const title = count === 1 ? "Select more tables, or none for the whole diagram" : count ? `Auto Layout the ${count} selected tables` : "Auto Layout the whole diagram";
+  return (
+    <>
+      <ToolButton icon={Network} label="Auto Layout" title={title} iconOnly disabled={count === 1} onClick={() => void useDiagrams.getState().autoLayout(id, selected)} />
+      <LayoutMenu id={id} />
+      <ToolButton icon={Undo2} label="Undo Layout" title="Undo Auto Layout (⌘Z)" iconOnly disabled={!canUndo} onClick={() => useDiagrams.getState().undoLayout(id)} />
+      <LayoutProgress id={id} />
+    </>
   );
 }
 
@@ -167,9 +265,12 @@ function useKeys(id: string) {
         "=": () => void flow.zoomTo(stepZoom(zoom, 1)),
         "+": () => void flow.zoomTo(stepZoom(zoom, 1)),
         "-": () => void flow.zoomTo(stepZoom(zoom, -1)),
+        z: () => useDiagrams.getState().undoLayout(id),
       };
       const action = actions[e.key.toLowerCase()];
       if (!action) return;
+      // The search box has its own undo.
+      if (e.key.toLowerCase() === "z" && (e.shiftKey || (e.target as HTMLElement).closest("input, textarea, select"))) return;
       e.preventDefault();
       action();
     };
@@ -202,6 +303,7 @@ function Workspace({ id }: { id: string }) {
           <ToolButton icon={SaveAll} label="Save As" title="Save As (⌘⇧S)" iconOnly onClick={() => useSavedDiagrams.getState().setPrompt({ kind: "save-as", tabId: id })} />
           <ToolButton icon={RefreshCw} label="Refresh" title="Reload from the database" iconOnly onClick={() => void useDiagrams.getState().load(id)} />
           <ToolButton icon={ListPlus} label="Tables" title={pendingReport ? "Review the changes in the database first" : "Choose the Tables on This Diagram"} iconOnly disabled={pendingReport} onClick={() => openTablePicker(id)} />
+          <LayoutButtons id={id} />
         </div>
         <Banner id={id} />
         <div className="flex min-h-0 flex-1">

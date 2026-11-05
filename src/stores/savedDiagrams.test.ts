@@ -18,7 +18,7 @@ vi.mock("../lib/api", () => ({
   diagramStructure: vi.fn(async () => ({ tables: [], foreignKeys: [] })),
   diagramCandidates: vi.fn(async () => []),
 }));
-vi.mock("../lib/diagramBrowser", () => ({ fontsReady: async () => {}, measureText: () => 10, runElk: async (g: object) => g }));
+vi.mock("../lib/diagramBrowser", () => ({ fontsReady: async () => {}, measureText: () => 10, runElk: async (g: object) => g, startLayout: () => ({ run: async (g: object) => g, cancel: () => {}, finish: () => {} }) }));
 
 const info = (more: Partial<DiagramInfo> = {}): DiagramInfo => ({ id: "d1", name: "Mine", database: "db", objects: 0, modifiedMs: 500, ...more });
 const content: DiagramContent = { objects: 0, layout: { tables: {}, routes: {}, viewport: null }, snapshot: { tables: [], foreignKeys: [] }, known: [] };

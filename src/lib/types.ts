@@ -726,7 +726,9 @@ export interface DiagramViewport {
   zoom: number;
 }
 
-/** How a diagram draws its tables. Saved with it. */
+export type DiagramLayoutQuality = "draft" | "normal";
+
+/** How a diagram draws and arranges its tables. Saved with it. */
 export interface DiagramOptions {
   showFieldComments: boolean;
   showNotNull: boolean;
@@ -735,6 +737,10 @@ export interface DiagramOptions {
   showRelationshipNames: boolean;
   fontSize: number;
   blackAndWhite: boolean;
+  /** Auto Layout's base spacing, in px. */
+  objectDistance: number;
+  layoutQuality: DiagramLayoutQuality;
+  groupBySchema: boolean;
 }
 
 /** Stored apart from the schema, so a refresh changes the snapshot and leaves positions alone. */
