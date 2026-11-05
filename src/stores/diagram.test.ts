@@ -312,8 +312,18 @@ describe("options", () => {
     expect(editor().dirty).toBe(false);
   });
 
+  it("offers a new layout when names arrive, not when they go", async () => {
+    const s = structure(table(1, "a"));
+    database(s);
+    await openSaved(savedDiagram(s));
+    await store().setOptions("t", { showRelationshipNames: false });
+    expect(editor().offerLayout).toBe(false);
+    await store().setOptions("t", { showRelationshipNames: true });
+    expect(editor().offerLayout).toBe(true);
+  });
+
   it("drop routes only when they move rows", async () => {
-    const linked: DiagramStructure = { tables: [table(1, "a", [column("id"), column("b_id")]), table(2, "b")], foreignKeys: [{ oid: 9, name: "fk", childOid: 1, parentOid: 2, childColumns: ["b_id"], parentColumns: ["id"], rolledUp: false, matchType: "s", onUpdate: "a", onDelete: "a" }] };
+    const linked: DiagramStructure = { tables: [table(1, "a", [column("id"), column("b_id")]), table(2, "b")], foreignKeys: [{ oid: 9, name: "fk", childOid: 1, parentOid: 2, childColumns: ["b_id"], parentColumns: ["id"], childPartition: null, parentPartition: null, matchType: "s", onUpdate: "a", onDelete: "a", childRequiresParent: false, uniqueVia: null, validated: true, enforced: true }] };
     database(linked);
     const saved = savedDiagram(linked);
     saved.layout.routes = { [JSON.stringify(["public", "a", "fk"])]: [{ x: 5, y: 5 }] };
@@ -329,13 +339,24 @@ describe("options", () => {
 describe("selection", () => {
   const s = structure(table(1, "a"), table(2, "b"));
 
+  it("finds a selected line's foreign key, for its columns to light up", async () => {
+    const foreignKey = { oid: 9, name: "fk", childOid: 1, parentOid: 2, childColumns: ["id"], parentColumns: ["id"], childPartition: null, parentPartition: null, matchType: "s", onUpdate: "a", onDelete: "a", childRequiresParent: false, uniqueVia: null, validated: true, enforced: true };
+    const linked = { ...s, foreignKeys: [foreignKey] };
+    database(linked);
+    await openSaved(savedDiagram(linked));
+    store().select("t", { nodes: [], edge: "9" });
+    expect(editor().selection.foreignKey?.name).toBe("fk");
+    store().select("t", { nodes: [], edge: null });
+    expect(editor().selection.foreignKey).toBeNull();
+  });
+
   it("selecting from the list marks one node, and clears any other", async () => {
     database(s);
     await openSaved(savedDiagram(s));
     store().selectNode("t", "1");
     store().selectNode("t", "2");
     expect(editor().nodes.map((n) => !!n.selected)).toEqual([false, true]);
-    expect(editor().selection).toEqual({ nodes: ["2"], edge: null });
+    expect(editor().selection).toEqual({ nodes: ["2"], edge: null, foreignKey: null });
   });
 
   it("doesn't write the same selection again, since React Flow repeats itself", async () => {
@@ -368,7 +389,7 @@ describe("changing the tables", () => {
   });
 
   it("removes a table's foreign keys with it", async () => {
-    const linked: DiagramStructure = { ...s, foreignKeys: [{ oid: 9, name: "fk", childOid: 1, parentOid: 2, childColumns: ["id"], parentColumns: ["id"], rolledUp: false, matchType: "s", onUpdate: "a", onDelete: "a" }] };
+    const linked: DiagramStructure = { ...s, foreignKeys: [{ oid: 9, name: "fk", childOid: 1, parentOid: 2, childColumns: ["id"], parentColumns: ["id"], childPartition: null, parentPartition: null, matchType: "s", onUpdate: "a", onDelete: "a", childRequiresParent: false, uniqueVia: null, validated: true, enforced: true }] };
     database(linked);
     await openSaved(savedDiagram(linked));
     store().removeTables("t", ["2"]);

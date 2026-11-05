@@ -26,9 +26,11 @@ export interface DiagramSelection {
   nodes: string[];
   /** A foreign key's oid, as an edge id. */
   edge: string | null;
+  /** That foreign key, so tables needn't search for it to highlight their columns. */
+  foreignKey: DiagramForeignKey | null;
 }
 
-const NOTHING_SELECTED: DiagramSelection = { nodes: [], edge: null };
+const NOTHING_SELECTED: DiagramSelection = { nodes: [], edge: null, foreignKey: null };
 
 export interface DiagramEditor {
   connectionId: string;
@@ -53,7 +55,7 @@ export interface DiagramEditor {
   hover: DiagramForeignKey | null;
   /** What changed since `snapshot`; null when nothing did. */
   report: DriftReport | null;
-  /** Tables changed size or arrived, so the banner offers a new layout. */
+  /** Tables changed size or arrived, or names need room, so the banner offers a new layout. */
   offerLayout: boolean;
   /** A designer saved something in this database since it loaded. */
   outOfDate: boolean;
@@ -88,7 +90,7 @@ interface DiagramsState {
   setNodes: (id: string, nodes: TableNode[], moved: Set<string>, settled: boolean) => void;
   setEdges: (id: string, edges: FkEdge[]) => void;
   /** Follows React Flow's selection. */
-  select: (id: string, selection: DiagramSelection) => void;
+  select: (id: string, selection: Omit<DiagramSelection, "foreignKey">) => void;
   /** Selects one table from outside the canvas. */
   selectNode: (id: string, node: string) => void;
   setHover: (id: string, foreignKey: DiagramForeignKey | null) => void;
@@ -173,7 +175,7 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
 
   async function loadNew(id: string, d: DiagramEditor, request: number) {
     const [candidates, structure] = await Promise.all([api.diagramCandidates(d.connectionId, d.database), api.diagramStructure(d.connectionId, d.database, d.oids)]);
-    const options = defaultOptions(structure.tables);
+    const options = defaultOptions(structure);
     const boxes = await measure(structure, options);
     const layout = await layoutDiagram(structure.tables, structure.foreignKeys, boxes, runElk, options);
     if (latest.get(id) !== request) return;
@@ -184,7 +186,7 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
     const layoutFile = currentLayout(d);
     const candidates = await api.diagramCandidates(d.connectionId, d.database);
     const structure = await api.diagramStructure(d.connectionId, d.database, resolveOids(snapshot, candidates));
-    const options = d.options ?? defaultOptions(structure.tables);
+    const options = d.options ?? defaultOptions(structure);
     const boxes = await measure(structure, options);
     const report = compareStructure(snapshot, d.known, structure, candidates);
     const layout = restoreLayout(layoutFile, structure, boxes, new Set(report.modified.map((m) => m.key)));
@@ -227,7 +229,7 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
         layout: saved.layout,
         viewport: saved.layout.viewport,
         // Older files have none. Filling in from defaults keeps them clean, and they gain options on the next save.
-        options: { ...defaultOptions(saved.snapshot.tables), ...saved.layout.options },
+        options: { ...defaultOptions(saved.snapshot), ...saved.layout.options },
         baseline: "",
         dirty: false,
         stamp: saved.modifiedMs,
@@ -274,7 +276,8 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
       if (!diagram) return;
       const edges = revealHubLines(diagram.edges, new Set(selection.nodes));
       const same = diagram.selection.edge === selection.edge && diagram.selection.nodes.length === selection.nodes.length && selection.nodes.every((n, i) => n === diagram.selection.nodes[i]);
-      if (edges !== diagram.edges || !same) update(id, () => ({ edges, selection }));
+      const foreignKey = selection.edge ? (diagram.structure?.foreignKeys.find((fk) => String(fk.oid) === selection.edge) ?? null) : null;
+      if (edges !== diagram.edges || !same) update(id, () => ({ edges, selection: { ...selection, foreignKey } }));
     },
 
     selectNode: (id, node) =>
@@ -284,7 +287,7 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
           return !!n.selected === selected ? n : { ...n, selected };
         }),
         edges: revealHubLines(d.edges.map((e) => (e.selected ? { ...e, selected: false } : e)), new Set([node])),
-        selection: { nodes: [node], edge: null },
+        selection: { nodes: [node], edge: null, foreignKey: null },
       })),
 
     setHover: (id, hover) => update(id, () => ({ hover })),
@@ -301,7 +304,8 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
           options,
           nodes,
           edges: movesRows(change) ? dropRoutes(d.edges, new Set(nodes.map((n) => n.id))) : d.edges,
-          offerLayout: d.offerLayout || resized,
+          // Lines laid out without names have no room for them.
+          offerLayout: d.offerLayout || resized || change.showRelationshipNames === true,
           dirty: isDirty(nodes, options, d.baseline),
         };
       });
@@ -361,7 +365,7 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
       const diagram = get().diagrams[id];
       if (!diagram?.structure) return;
       const { structure } = diagram;
-      const options = diagram.options ?? defaultOptions(structure.tables);
+      const options = diagram.options ?? defaultOptions(structure);
       const boxes = await measure(structure, options);
       const layout = await layoutDiagram(structure.tables, structure.foreignKeys, boxes, runElk, options);
       const screen = drawn(structure, layout, boxes, options);
@@ -384,7 +388,7 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
       }
       const oids = [...diagram.structure.tables.map((t) => t.oid), ...renamed, ...add];
       const [candidates, structure] = await Promise.all([api.diagramCandidates(connectionId, database), api.diagramStructure(connectionId, database, oids)]);
-      const options = diagram.options ?? defaultOptions(structure.tables);
+      const options = diagram.options ?? defaultOptions(structure);
       const boxes = await measure(structure, options);
       const restored = restoreLayout(layout, structure, boxes, new Set(report?.modified.map((m) => m.key)));
       update(id, (d) => ({

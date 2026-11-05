@@ -6,12 +6,19 @@
 // taken out, what's left falls into clusters, ELK lays out each one, and the results are packed.
 
 import type { ElkExtendedEdge, ElkNode } from "elkjs/lib/elk-api";
-import type { DiagramColumn, DiagramForeignKey, DiagramOptions, DiagramTable } from "./types";
+import type { DiagramColumn, DiagramForeignKey, DiagramOptions, DiagramStructure, DiagramTable } from "./types";
 
-export const DEFAULT_OPTIONS: DiagramOptions = { showFieldComments: false, showNotNull: false, showObjectComments: false, showSchemaNames: false, fontSize: 11, blackAndWhite: false };
+export const DEFAULT_OPTIONS: DiagramOptions = { showFieldComments: false, showNotNull: false, showObjectComments: false, showSchemaNames: false, showRelationshipNames: true, fontSize: 11, blackAndWhite: false };
+
+/** More lines than this start with their names off, because they'd crowd the diagram. */
+const NAMED_LINES_LIMIT = 60;
 
 /** A diagram of several schemas shows them, because a bare name could mean two tables. */
-export const defaultOptions = (tables: DiagramTable[]): DiagramOptions => ({ ...DEFAULT_OPTIONS, showSchemaNames: new Set(tables.map((t) => t.schema)).size > 1 });
+export const defaultOptions = ({ tables, foreignKeys }: DiagramStructure): DiagramOptions => ({
+  ...DEFAULT_OPTIONS,
+  showSchemaNames: new Set(tables.map((t) => t.schema)).size > 1,
+  showRelationshipNames: foreignKeys.length <= NAMED_LINES_LIMIT,
+});
 
 export const headerHeight = ({ fontSize }: DiagramOptions) => Math.round(fontSize * 2.4);
 export const rowHeight = ({ fontSize }: DiagramOptions) => Math.round(fontSize * 1.65);
@@ -34,6 +41,8 @@ const MAX_WIDTH = 420;
 const SCROLLBAR = 12;
 const CLUSTER_GAP = 30;
 const LAYER_GAP = 70;
+/** Room for a name between tables, as a line's marks take the first and last 20 px. */
+const NAMED_LAYER_GAP = 160;
 const HUB_GAP = 60;
 const BLOCK_GAP = 120;
 
@@ -179,7 +188,8 @@ export function clusterGraph(cluster: DiagramTable[], foreignKeys: DiagramForeig
     return id;
   };
   const edges: ElkExtendedEdge[] = foreignKeys
-    .filter((fk) => members.has(fk.childOid) && members.has(fk.parentOid))
+    // A self-reference draws its own loop, which needs no route and survives a drag.
+    .filter((fk) => members.has(fk.childOid) && members.has(fk.parentOid) && fk.childOid !== fk.parentOid)
     .map((fk) => ({
       id: String(fk.oid),
       sources: [port(fk.childOid, fk.childColumns[0], "EAST")],
@@ -193,7 +203,7 @@ export function clusterGraph(cluster: DiagramTable[], foreignKeys: DiagramForeig
       "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
       "elk.separateConnectedComponents": "false",
       "elk.spacing.nodeNode": String(CLUSTER_GAP),
-      "elk.layered.spacing.nodeNodeBetweenLayers": String(LAYER_GAP),
+      "elk.layered.spacing.nodeNodeBetweenLayers": String(options.showRelationshipNames ? NAMED_LAYER_GAP : LAYER_GAP),
       "elk.spacing.edgeNode": "20",
       "elk.spacing.edgeEdge": "8",
     },

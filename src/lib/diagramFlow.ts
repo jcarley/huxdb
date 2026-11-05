@@ -2,13 +2,16 @@
 // come from React Flow, so stores can use this without pulling the library into the main bundle.
 
 import type { Edge, Node } from "@xyflow/react";
-import { columnOffset, DEFAULT_OPTIONS } from "./diagramLayout";
+import { childEnd, lineKind, parentEnd } from "./diagramCardinality";
+import type { ChildEnd, LineKind, ParentEnd } from "./diagramCardinality";
+import { columnOffset, DEFAULT_OPTIONS, rowHeight } from "./diagramLayout";
 import type { Box, Layout, Point } from "./diagramLayout";
 import type { DiagramForeignKey, DiagramOptions, DiagramStructure, DiagramTable } from "./types";
 
 export interface TableHandle {
   id: string;
-  side: "left" | "right";
+  /** `self` is where a self-reference comes back in, on the right, as its loop stays on one side. */
+  side: "left" | "right" | "self";
   top: number;
 }
 
@@ -24,14 +27,17 @@ export interface FkData extends Record<string, unknown> {
   /** ELK's bend points. Absent once either table has moved, or for a line that never had any. */
   points?: Point[];
   hub: boolean;
-  rolledUp: boolean;
+  name: string;
+  parentEnd: ParentEnd;
+  childEnd: ChildEnd;
+  kind: LineKind;
 }
 
 export type TableNode = Node<TableData, "table">;
 export type FkEdge = Edge<FkData, "fk">;
 
 const childHandle = (fk: DiagramForeignKey) => `right:${fk.childColumns[0]}`;
-const parentHandle = (fk: DiagramForeignKey) => `left:${fk.parentColumns[0]}`;
+const parentHandle = (fk: DiagramForeignKey) => (fk.childOid === fk.parentOid ? `self:${fk.childColumns[0]}:${fk.parentColumns[0]}` : `left:${fk.parentColumns[0]}`);
 
 export function toNodes({ tables, foreignKeys }: DiagramStructure, layout: Layout, boxes: Map<number, Box>, options = DEFAULT_OPTIONS): TableNode[] {
   return tables.map((table) => {
@@ -43,7 +49,11 @@ export function toNodes({ tables, foreignKeys }: DiagramStructure, layout: Layou
         handles.set(childHandle(fk), { id: childHandle(fk), side: "right", top: columnOffset(table, fk.childColumns[0], options) });
       }
       if (fk.parentOid === table.oid) {
-        handles.set(parentHandle(fk), { id: parentHandle(fk), side: "left", top: columnOffset(table, fk.parentColumns[0], options) });
+        const self = fk.childOid === table.oid;
+        const top = columnOffset(table, fk.parentColumns[0], options);
+        // A column referencing itself, or both ends on a capped table's header, would leave a loop no height.
+        const shift = self && top === columnOffset(table, fk.childColumns[0], options) ? rowHeight(options) : 0;
+        handles.set(parentHandle(fk), { id: parentHandle(fk), side: self ? "self" : "left", top: top + shift });
       }
     }
     return {
@@ -67,7 +77,7 @@ export function toEdges({ foreignKeys }: DiagramStructure, layout: Layout): FkEd
       sourceHandle: childHandle(fk),
       targetHandle: parentHandle(fk),
       hidden: hub,
-      data: { points: layout.routes.get(fk.oid), hub, rolledUp: fk.rolledUp },
+      data: { points: fk.childOid === fk.parentOid ? undefined : layout.routes.get(fk.oid), hub, name: fk.name, parentEnd: parentEnd(fk), childEnd: childEnd(fk), kind: lineKind(fk) },
     };
   });
 }

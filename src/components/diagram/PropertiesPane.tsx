@@ -1,4 +1,5 @@
 import { KeyRound, Link2 } from "lucide-react";
+import { relationshipFacts, relationshipNotes } from "../../lib/diagramCardinality";
 import { foreignKeyRule, matchLabel } from "../../lib/diagramFlow";
 import type { DiagramForeignKey, DiagramOptions, DiagramTable } from "../../lib/types";
 import { useDiagrams } from "../../stores/diagram";
@@ -10,6 +11,7 @@ const CHECKBOXES: { option: keyof DiagramOptions; label: string }[] = [
   { option: "showFieldComments", label: "Show field comments" },
   { option: "showNotNull", label: "Show field NOT NULL" },
   { option: "showSchemaNames", label: "Show schema names" },
+  { option: "showRelationshipNames", label: "Show relationship names" },
   { option: "blackAndWhite", label: "Black and white" },
 ];
 
@@ -71,11 +73,17 @@ function ForeignKeyProperties({ fk, child, parent }: { fk: DiagramForeignKey; ch
     ["Match", matchLabel(fk.matchType)],
     ["On update", foreignKeyRule(fk.onUpdate)],
     ["On delete", foreignKeyRule(fk.onDelete)],
+    ...(fk.uniqueVia ? ([["Unique via", fk.uniqueVia]] as [string, string][]) : []),
   ];
   return (
     <div className="p-2 text-sm select-text">
       <h3 className="font-semibold break-all">{fk.name}</h3>
-      <p className="text-xs text-base-content/60">Foreign key{fk.rolledUp ? ", declared on a partition" : ""}</p>
+      <p className="text-xs text-base-content/60">Foreign key</p>
+      <ul className="mt-2 text-xs">
+        {relationshipFacts(fk, child?.name ?? "child", parent?.name ?? "parent").map((fact) => (
+          <li key={fact}>{fact}</li>
+        ))}
+      </ul>
       <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-xs">
         {rows.map(([label, value]) => (
           <div key={label} className="contents">
@@ -84,6 +92,11 @@ function ForeignKeyProperties({ fk, child, parent }: { fk: DiagramForeignKey; ch
           </div>
         ))}
       </dl>
+      <ul className="mt-2 flex flex-col gap-1 text-xs text-base-content/60">
+        {relationshipNotes(fk).map((note) => (
+          <li key={note}>{note}</li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -96,7 +109,7 @@ export function PropertiesPane({ id }: { id: string }) {
   if (!options || !structure || !selection) return null;
 
   const table = (oid: number) => structure.tables.find((t) => t.oid === oid);
-  const fk = selection.edge ? structure.foreignKeys.find((f) => String(f.oid) === selection.edge) : undefined;
+  const fk = selection.foreignKey;
   const selected = selection.nodes.length === 1 ? table(Number(selection.nodes[0])) : undefined;
 
   return (

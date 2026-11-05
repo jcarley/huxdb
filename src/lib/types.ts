@@ -675,7 +675,7 @@ export interface DiagramTable {
   columns: DiagramColumn[];
 }
 
-/** One constraint, one line. `rolledUp` means it was declared on a partition of the child or parent. */
+/** One constraint, one line. */
 export interface DiagramForeignKey {
   oid: number;
   name: string;
@@ -683,11 +683,22 @@ export interface DiagramForeignKey {
   parentOid: number;
   childColumns: string[];
   parentColumns: string[];
-  rolledUp: boolean;
+  /** The partition holding this key, when the line is drawn from its root. */
+  childPartition: string | null;
+  /** The partition this key references, when the line is drawn to its root. */
+  parentPartition: string | null;
   /** `pg_constraint`'s codes: see `foreignKeyRules`. */
   matchType: string;
   onUpdate: string;
   onDelete: string;
+  /** A row of the child table must have a parent. */
+  childRequiresParent: boolean;
+  /** The unique index holding a parent to at most one child, if there is one. */
+  uniqueVia: string | null;
+  /** False for `NOT VALID`. */
+  validated: boolean;
+  /** False for `NOT ENFORCED`. */
+  enforced: boolean;
 }
 
 export interface DiagramStructure {
@@ -721,6 +732,7 @@ export interface DiagramOptions {
   showNotNull: boolean;
   showObjectComments: boolean;
   showSchemaNames: boolean;
+  showRelationshipNames: boolean;
   fontSize: number;
   blackAndWhite: boolean;
 }

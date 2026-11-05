@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { dropRoutes, foreignKeyRule, matchLabel, reshapeNodes, revealHubLines, toEdges, toNodes } from "./diagramFlow";
-import { DEFAULT_OPTIONS, headerHeight, MAX_ROWS } from "./diagramLayout";
+import { DEFAULT_OPTIONS, headerHeight, MAX_ROWS, rowHeight } from "./diagramLayout";
 import type { Box, Layout } from "./diagramLayout";
 import type { DiagramForeignKey, DiagramStructure, DiagramTable } from "./types";
 
@@ -18,10 +18,15 @@ const fk = (oid: number, childOid: number, parentOid: number, childColumns = ["c
   parentOid,
   childColumns,
   parentColumns,
-  rolledUp: false,
+  childPartition: null,
+  parentPartition: null,
   matchType: "s",
   onUpdate: "a",
   onDelete: "a",
+  childRequiresParent: false,
+  uniqueVia: null,
+  validated: true,
+  enforced: true,
 });
 const layoutOf = (structure: DiagramStructure, hubs: number[] = []): Layout => ({
   positions: new Map(structure.tables.map((t) => [t.oid, { x: t.oid * 10, y: 0 }])),
@@ -54,7 +59,22 @@ describe("toNodes", () => {
 
   it("gives a self-reference both sides", () => {
     const s = { tables: [table(1)], foreignKeys: [fk(1, 1, 1)] };
-    expect(toNodes(s, layoutOf(s), boxes(s))[0].data.handles.map((h) => h.side)).toEqual(["right", "left"]);
+    expect(toNodes(s, layoutOf(s), boxes(s))[0].data.handles.map((h) => h.side)).toEqual(["right", "self"]);
+  });
+
+  it("gives a self-reference's loop some height when both ends share a row", () => {
+    const own = { tables: [table(1)], foreignKeys: [fk(1, 1, 1, ["c1"], ["c1"])] };
+    const [out, back] = toNodes(own, layoutOf(own), boxes(own))[0].data.handles;
+    expect(back.top - out.top).toBe(rowHeight(DEFAULT_OPTIONS));
+
+    const capped = { tables: [table(1, "public", MAX_ROWS + 1)], foreignKeys: [fk(1, 1, 1, ["c9"], ["c0"])] };
+    const [top, bottom] = toNodes(capped, layoutOf(capped), boxes(capped))[0].data.handles;
+    expect(bottom.top).toBeGreaterThan(top.top);
+  });
+
+  it("keeps a self-reference's way in apart from a line arriving at that column", () => {
+    const s = { tables: [table(1), table(2)], foreignKeys: [fk(1, 1, 1), fk(2, 2, 1)] };
+    expect(toNodes(s, layoutOf(s), boxes(s))[0].data.handles.map((h) => h.id)).toEqual(["right:c1", "self:c1:c0", "left:c0"]);
   });
 
   it("puts a capped table's handles on its header", () => {
@@ -94,6 +114,20 @@ describe("toEdges", () => {
     const [routed, hub] = toEdges(s, layoutOf(s, [2]));
     expect(routed).toMatchObject({ hidden: false, data: { points: [{ x: 5, y: 5 }], hub: false } });
     expect(hub).toMatchObject({ hidden: true, data: { hub: true } });
+  });
+});
+
+describe("toEdges' marks", () => {
+  it("derives each end and the line from the foreign key", () => {
+    const s = { tables: [table(1), table(2)], foreignKeys: [{ ...fk(1, 1, 2), childRequiresParent: true, uniqueVia: "uq", validated: false }] };
+    expect(toEdges(s, layoutOf(s))[0].data).toMatchObject({ name: "fk1", parentEnd: "one", childEnd: "zero-or-one", kind: "unchecked" });
+  });
+
+  it("gives a self-reference no route, and takes it back in on its own handle", () => {
+    const s = { tables: [table(1)], foreignKeys: [fk(1, 1, 1)] };
+    const [edge] = toEdges(s, layoutOf(s));
+    expect(edge.data?.points).toBeUndefined();
+    expect(edge.targetHandle).toBe("self:c1:c0");
   });
 });
 

@@ -13,14 +13,18 @@ const ROWS_FROM_ZOOM = 0.35;
 
 const HANDLE_STYLE = { opacity: 0, width: 1, height: 1, minWidth: 1, minHeight: 1, border: 0 };
 
-/** One string per table, so hovering a line re-renders only the two tables it joins. */
+/** One string per table, so hovering or selecting a line re-renders only the two tables it joins. */
 function useHighlighted(oid: number) {
   const id = useDiagramId();
   return useDiagrams((s) => {
-    const fk = s.diagrams[id]?.hover;
-    if (fk?.childOid === oid) return `\u0000${fk.childColumns.join("\u0000")}\u0000`;
-    if (fk?.parentOid === oid) return `\u0000${fk.parentColumns.join("\u0000")}\u0000`;
-    return "";
+    const diagram = s.diagrams[id];
+    if (!diagram) return "";
+    let columns = "\u0000";
+    for (const fk of [diagram.hover, diagram.selection.foreignKey]) {
+      if (fk?.childOid === oid) columns += `${fk.childColumns.join("\u0000")}\u0000`;
+      if (fk?.parentOid === oid) columns += `${fk.parentColumns.join("\u0000")}\u0000`;
+    }
+    return columns;
   });
 }
 
@@ -81,7 +85,7 @@ export const TableBox = memo(function TableBox({ data, width, height }: NodeProp
           key={handle.id}
           id={handle.id}
           type={handle.side === "right" ? "source" : "target"}
-          position={handle.side === "right" ? Position.Right : Position.Left}
+          position={handle.side === "left" ? Position.Left : Position.Right}
           isConnectable={false}
           style={{ ...HANDLE_STYLE, top: handle.top }}
         />

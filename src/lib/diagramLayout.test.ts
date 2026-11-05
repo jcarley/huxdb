@@ -22,10 +22,15 @@ const fk = (childOid: number, parentOid: number, child = "c1", parent = "c0"): D
   parentOid,
   childColumns: [child],
   parentColumns: [parent],
-  rolledUp: false,
+  childPartition: null,
+  parentPartition: null,
   matchType: "s",
   onUpdate: "a",
   onDelete: "a",
+  childRequiresParent: false,
+  uniqueVia: null,
+  validated: true,
+  enforced: true,
 });
 const sizes = (tables: DiagramTable[]) => new Map<number, Box>(tables.map((t) => [t.oid, { width: 100, height: 80 }]));
 const measure = (text: string) => text.length * 6;
@@ -66,8 +71,8 @@ describe("options", () => {
   });
 
   it("show schemas by default only for several schemas", () => {
-    expect(defaultOptions([table(1)]).showSchemaNames).toBe(false);
-    expect(defaultOptions([table(1), { ...table(2), schema: "other" }]).showSchemaNames).toBe(true);
+    expect(defaultOptions({ tables: [table(1)], foreignKeys: [] }).showSchemaNames).toBe(false);
+    expect(defaultOptions({ tables: [table(1), { ...table(2), schema: "other" }], foreignKeys: [] }).showSchemaNames).toBe(true);
   });
 
   it("widen a table for what its rows now show", () => {
@@ -170,7 +175,20 @@ describe("partition", () => {
   });
 });
 
+it("starts a crowded diagram with its relationship names off", () => {
+  const tables = [table(1), table(2)];
+  expect(defaultOptions({ tables, foreignKeys: Array.from({ length: 60 }, () => fk(1, 2)) }).showRelationshipNames).toBe(true);
+  expect(defaultOptions({ tables, foreignKeys: Array.from({ length: 61 }, () => fk(1, 2)) }).showRelationshipNames).toBe(false);
+});
+
 describe("clusterGraph", () => {
+  it("leaves self-references out, as they draw their own loop", () => {
+    const [a, b] = [table(1), table(2)];
+    const graph = clusterGraph([a, b], [fk(1, 1), fk(1, 2)], sizes([a, b]));
+    expect(graph.edges).toHaveLength(1);
+    expect(graph.children![0].ports).toHaveLength(1);
+  });
+
   it("fixes each port to its column, and leaves out keys that leave the cluster", () => {
     const a = table(1);
     const b = table(2);

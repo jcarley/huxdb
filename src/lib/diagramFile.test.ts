@@ -7,7 +7,7 @@ import type { Box, Layout } from "./diagramLayout";
 import type { DiagramForeignKey, DiagramLayoutFile, DiagramStructure, DiagramTable } from "./types";
 
 const table = (oid: number): DiagramTable => ({ oid, schema: "public", name: `t${oid}`, comment: null, columns: [{ name: "id", dataType: "integer", notNull: true, primaryKey: true, comment: null }, { name: "a", dataType: "integer", notNull: false, primaryKey: false, comment: null }] });
-const fk = (oid: number, childOid: number, parentOid: number): DiagramForeignKey => ({ oid, name: `fk${oid}`, childOid, parentOid, childColumns: ["a"], parentColumns: ["id"], rolledUp: false, matchType: "s", onUpdate: "a", onDelete: "a" });
+const fk = (oid: number, childOid: number, parentOid: number): DiagramForeignKey => ({ oid, name: `fk${oid}`, childOid, parentOid, childColumns: ["a"], parentColumns: ["id"], childPartition: null, parentPartition: null, matchType: "s", onUpdate: "a", onDelete: "a", childRequiresParent: false, uniqueVia: null, validated: true, enforced: true });
 const boxesOf = (s: DiagramStructure) => new Map<number, Box>(s.tables.map((t) => [t.oid, { width: 100, height: 50 }]));
 const empty: DiagramLayoutFile = { tables: {}, routes: {}, viewport: null };
 const onScreen = (s: DiagramStructure, layout: Layout) => ({ nodes: toNodes(s, layout, boxesOf(s)), edges: toEdges(s, layout) });

@@ -4,7 +4,7 @@ import type { DiagramCandidate, DiagramColumn, DiagramForeignKey, DiagramStructu
 
 const column = (name: string, dataType = "integer", more: Partial<DiagramColumn> = {}): DiagramColumn => ({ name, dataType, notNull: false, primaryKey: false, comment: null, ...more });
 const table = (oid: number, name: string, columns = [column("id")], schema = "public"): DiagramTable => ({ oid, schema, name, comment: null, columns });
-const fk = (oid: number, name: string, childOid: number, parentOid: number, childColumns = ["a"], parentColumns = ["id"]): DiagramForeignKey => ({ oid, name, childOid, parentOid, childColumns, parentColumns, rolledUp: false, matchType: "s", onUpdate: "a", onDelete: "a" });
+const fk = (oid: number, name: string, childOid: number, parentOid: number, childColumns = ["a"], parentColumns = ["id"]): DiagramForeignKey => ({ oid, name, childOid, parentOid, childColumns, parentColumns, childPartition: null, parentPartition: null, matchType: "s", onUpdate: "a", onDelete: "a", childRequiresParent: false, uniqueVia: null, validated: true, enforced: true });
 const candidate = ({ oid, schema, name }: DiagramTable): DiagramCandidate => ({ oid, schema, name });
 const structure = (tables: DiagramTable[], foreignKeys: DiagramForeignKey[] = []): DiagramStructure => ({ tables, foreignKeys });
 const compare = (saved: DiagramStructure, current: DiagramStructure, extra: DiagramCandidate[] = [], known = saved.tables.map(tableKey)) =>

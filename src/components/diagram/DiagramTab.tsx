@@ -16,6 +16,7 @@ import { ToolButton } from "../ToolButton";
 import { useContextMenu } from "../tree/ContextMenu";
 import { DiagramId } from "./DiagramId";
 import { FkLine } from "./FkLine";
+import { FkMarkers } from "./FkMarkers";
 import { designTable, nodeMenu, openTablePicker } from "./nodeMenu";
 import { ObjectPane } from "./ObjectPane";
 import { OverviewPane } from "./OverviewPane";
@@ -33,6 +34,7 @@ function Canvas({ id }: { id: string }) {
   const nodes = useDiagrams((s) => s.diagrams[id]?.nodes);
   const edges = useDiagrams((s) => s.diagrams[id]?.edges);
   const options = useDiagrams((s) => s.diagrams[id]?.options);
+  const structure = useDiagrams((s) => s.diagrams[id]?.structure);
   const active = useTabs((s) => s.activeId === id);
   const openMenu = useContextMenu((s) => s.open);
   const flow = useReactFlow();
@@ -49,10 +51,10 @@ function Canvas({ id }: { id: string }) {
     else void flow.fitView({ minZoom: MIN_ZOOM, maxZoom: 1, padding: 0.03 });
   }, [active, flow, id, measured]);
 
-  // Options move handles inside a node without always resizing it, which React Flow wouldn't notice.
+  // Options and new foreign keys change handles without always resizing a node, which React Flow wouldn't notice.
   useEffect(() => {
     if (placed.current) updateNodeInternals(useDiagrams.getState().diagrams[id]?.nodes.map((n) => n.id) ?? []);
-  }, [id, options, updateNodeInternals]);
+  }, [id, options, structure, updateNodeInternals]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange<TableNode>[]) => {
@@ -107,9 +109,11 @@ function Canvas({ id }: { id: string }) {
       zoomOnDoubleClick={false}
       nodesConnectable={false}
       edgesFocusable={false}
+      elevateEdgesOnSelect
       deleteKeyCode={null}
     >
       <Background gap={20} />
+      <FkMarkers tab={id} />
     </ReactFlow>
   );
 }
@@ -126,7 +130,7 @@ function Banner({ id }: { id: string }) {
 
   return (
     <div role="status" className="flex flex-wrap items-center gap-2 border-b border-base-300 bg-base-200 px-3 py-1.5 text-sm">
-      {outOfDate ? <span>This database changed since the diagram loaded.</span> : report ? <span>{summary(report)} since this diagram was saved.</span> : <span>Some tables changed size or arrived.</span>}
+      {outOfDate ? <span>This database changed since the diagram loaded.</span> : report ? <span>{summary(report)} since this diagram was saved.</span> : <span>The layout no longer fits what this diagram shows.</span>}
       {outOfDate && (
         <button type="button" className="btn btn-xs" onClick={() => void load(id)}>
           Refresh
