@@ -17,7 +17,9 @@ export type TreeNodeRef =
   | { kind: "group"; connectionId: string; database: string; schema: string; group: ObjectGroup }
   | { kind: "object"; connectionId: string; database: string; schema: string; group: ObjectGroup; name: string }
   | { kind: "queries"; connectionId: string }
-  | { kind: "query"; connectionId: string; id: string };
+  | { kind: "query"; connectionId: string; id: string }
+  | { kind: "diagrams"; connectionId: string }
+  | { kind: "diagram"; connectionId: string; id: string };
 
 export type LoadState = { status: "loading" } | { status: "loaded" } | { status: "error"; error: string };
 
@@ -26,6 +28,7 @@ export type LoadState = { status: "loading" } | { status: "loaded" } | { status:
 const SEP = "\u001f";
 /** In the place a database's name goes, where "#queries" could be a real name. */
 const QUERIES = "\u001equeries";
+const DIAGRAMS = "\u001ediagrams";
 
 /** Stable string key for a node; a node's key is a prefix of all its descendants' keys. */
 export function nodeKey(node: TreeNodeRef): string {
@@ -44,6 +47,10 @@ export function nodeKey(node: TreeNodeRef): string {
       return [node.connectionId, QUERIES].join(SEP);
     case "query":
       return [node.connectionId, QUERIES, node.id].join(SEP);
+    case "diagrams":
+      return [node.connectionId, DIAGRAMS].join(SEP);
+    case "diagram":
+      return [node.connectionId, DIAGRAMS, node.id].join(SEP);
   }
 }
 
@@ -58,6 +65,10 @@ export function isGroupSelection(node: TreeNodeRef | null, group: ObjectGroup): 
 /** Whether `node` is a connection's Queries node or a query under it. */
 export const isQueriesSelection = (node: TreeNodeRef | null): node is Extract<TreeNodeRef, { kind: "queries" | "query" }> =>
   node?.kind === "queries" || node?.kind === "query";
+
+/** Whether `node` is a connection's Diagrams node or a diagram under it. */
+export const isDiagramsSelection = (node: TreeNodeRef | null): node is Extract<TreeNodeRef, { kind: "diagrams" | "diagram" }> =>
+  node?.kind === "diagrams" || node?.kind === "diagram";
 
 const isWithin = (key: string, ancestor: string) => key === ancestor || key.startsWith(ancestor + SEP);
 const isBelow = (key: string, ancestor: string) => key.startsWith(ancestor + SEP);
@@ -98,6 +109,8 @@ interface ExplorerState {
   showGroup: (group: ObjectGroup) => void;
   /** Selects the Queries node of the selected node's connection. */
   showQueries: () => void;
+  /** Selects the Diagrams node of the selected node's connection. */
+  showDiagrams: () => void;
   /** Closes the connection's pools in the backend and forgets its tree state. */
   closeConnection: (connectionId: string) => Promise<void>;
   /** Drops all tree state for a connection (e.g. after it was edited or deleted). */
@@ -213,6 +226,14 @@ export const useExplorer = create<ExplorerState>((set, get) => {
       const { connectionId } = node;
       get().expand({ kind: "connection", connectionId });
       get().select({ kind: "queries", connectionId });
+    },
+
+    showDiagrams: () => {
+      const node = get().selected;
+      if (!node) return;
+      const { connectionId } = node;
+      get().expand({ kind: "connection", connectionId });
+      get().select({ kind: "diagrams", connectionId });
     },
 
     closeConnection: async (connectionId) => {

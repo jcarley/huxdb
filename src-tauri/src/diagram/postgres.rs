@@ -26,7 +26,7 @@ const TABLES: &str = "SELECT c.oid::int8, n.nspname::text, c.relname::text
     WHERE c.oid = ANY ($1::oid[])
     ORDER BY 2, 3";
 
-const COLUMNS: &str = "SELECT a.attrelid::int8, a.attname::text, format_type(a.atttypid, a.atttypmod)
+const COLUMNS: &str = "SELECT a.attrelid::int8, a.attname::text, format_type(a.atttypid, a.atttypmod), a.attnotnull
     FROM pg_attribute a
     WHERE a.attrelid = ANY ($1::oid[]) AND a.attnum > 0 AND NOT a.attisdropped
     ORDER BY a.attrelid, a.attnum";
@@ -71,6 +71,7 @@ pub struct DiagramCandidate {
 pub struct DiagramColumn {
     pub name: String,
     pub data_type: String,
+    pub not_null: bool,
     pub primary_key: bool,
 }
 
@@ -105,7 +106,7 @@ pub struct DiagramStructure {
 }
 
 type TableRow = (i64, String, String);
-type ColumnRow = (i64, String, String);
+type ColumnRow = (i64, String, String, bool);
 type PrimaryKeyRow = (i64, String);
 type ForeignKeyRow = (i64, String, i64, i64, Vec<String>, Vec<String>, bool);
 
@@ -141,9 +142,9 @@ pub async fn load_structure(pool: &PgPool, oids: &[i64]) -> Result<DiagramStruct
 fn assemble(tables: Vec<TableRow>, columns: Vec<ColumnRow>, primary_keys: Vec<PrimaryKeyRow>, foreign_keys: Vec<ForeignKeyRow>) -> DiagramStructure {
     let primary_keys: HashSet<(i64, String)> = primary_keys.into_iter().collect();
     let mut by_table: HashMap<i64, Vec<DiagramColumn>> = HashMap::new();
-    for (oid, name, data_type) in columns {
+    for (oid, name, data_type, not_null) in columns {
         let primary_key = primary_keys.contains(&(oid, name.clone()));
-        by_table.entry(oid).or_default().push(DiagramColumn { name, data_type, primary_key });
+        by_table.entry(oid).or_default().push(DiagramColumn { name, data_type, not_null, primary_key });
     }
     let tables = tables
         .into_iter()
@@ -176,12 +177,13 @@ mod tests {
     fn marks_primary_keys_and_keeps_column_order() {
         let structure = assemble(
             vec![(1, "public".into(), "orders".into()), (2, "public".into(), "empty".into())],
-            vec![(1, "id".into(), "bigint".into()), (1, "note".into(), "text".into()), (9, "gone".into(), "text".into())],
+            vec![(1, "id".into(), "bigint".into(), true), (1, "note".into(), "text".into(), false), (9, "gone".into(), "text".into(), false)],
             vec![(1, "id".into())],
             vec![(5, "fk".into(), 1, 1, vec!["a".into()], vec!["id".into()], false)],
         );
         let orders = &structure.tables[0];
         assert_eq!(orders.columns.iter().map(|c| (c.name.as_str(), c.primary_key)).collect::<Vec<_>>(), [("id", true), ("note", false)]);
+        assert!(orders.columns[0].not_null && !orders.columns[1].not_null);
         assert!(structure.tables[1].columns.is_empty());
         assert_eq!(structure.foreign_keys[0].child_columns, ["a"]);
     }
@@ -229,7 +231,8 @@ mod tests {
 
         let parent = structure.tables.iter().find(|t| t.name == "parent").unwrap();
         assert_eq!(parent.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["x", "y"]);
-        assert!(parent.columns.iter().all(|c| c.primary_key));
+        assert!(parent.columns.iter().all(|c| c.primary_key && c.not_null));
+        assert!(!structure.tables.iter().find(|t| t.name == "pair").unwrap().columns[2].not_null);
 
         let pair = structure.foreign_keys.iter().find(|f| f.child_oid == oid("pair")).unwrap();
         assert_eq!(pair.child_columns, ["a_y", "a_x"]);

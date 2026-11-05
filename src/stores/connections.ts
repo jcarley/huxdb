@@ -22,7 +22,7 @@ interface ConnectionsState {
   requestDelete: (config: ConnectionConfig) => void;
   cancelDelete: () => void;
   /** Deletes `pendingDelete`, and its saved queries if asked. Throws the backend error. */
-  confirmDelete: (deleteQueries: boolean) => Promise<void>;
+  confirmDelete: (deleteFiles: boolean) => Promise<void>;
 }
 
 export const useConnections = create<ConnectionsState>((set, get) => ({
@@ -65,10 +65,10 @@ export const useConnections = create<ConnectionsState>((set, get) => ({
   requestDelete: (config) => set({ pendingDelete: config }),
   cancelDelete: () => set({ pendingDelete: null }),
 
-  confirmDelete: async (deleteQueries) => {
+  confirmDelete: async (deleteFiles) => {
     const target = get().pendingDelete;
     if (!target) return;
-    await api.deleteConnection(target.id, deleteQueries);
+    await api.deleteConnection(target.id, deleteFiles);
     useExplorer.getState().forget(target.id);
     useTabs.getState().forgetConnection(target.id);
     set((s) => ({

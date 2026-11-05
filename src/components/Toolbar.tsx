@@ -1,9 +1,9 @@
-import { Eye, FileCode, Network, Plug, SquarePen, Table } from "lucide-react";
+import { Eye, FileCode, Network, Plug, Share2, SquarePen, Table } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { newConnection } from "../lib/types";
 import { useConnections } from "../stores/connections";
 import { useDiagrams } from "../stores/diagram";
-import { isGroupSelection, isQueriesSelection, useExplorer } from "../stores/explorer";
+import { isDiagramsSelection, isGroupSelection, isQueriesSelection, useExplorer } from "../stores/explorer";
 import type { TreeNodeRef } from "../stores/explorer";
 import { useTabs } from "../stores/tabs";
 
@@ -82,6 +82,7 @@ export function Toolbar() {
         onClick={() => showGroup("views")}
       />
       <ToolbarButton icon={FileCode} label="Queries" disabled={!selected} active={isQueriesSelection(selected)} onClick={() => useExplorer.getState().showQueries()} />
+      <ToolbarButton icon={Share2} label="Diagrams" disabled={!selected} active={isDiagramsSelection(selected)} onClick={() => useExplorer.getState().showDiagrams()} />
     </header>
   );
 }

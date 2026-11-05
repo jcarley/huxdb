@@ -8,6 +8,7 @@ mod query;
 mod saved_queries;
 
 use connections::store::ConnectionStore;
+use diagram::store::DiagramStore;
 use editor::EditorSessions;
 use explorer::sessions::SessionManager;
 use query::QuerySessions;
@@ -52,6 +53,7 @@ pub fn run() {
             let config_dir = app.path().app_config_dir()?;
             app.manage(ConnectionStore::load(config_dir.join("connections.json")));
             app.manage(SavedQueryStore::new(config_dir.join("queries")));
+            app.manage(DiagramStore::new(config_dir.join("diagrams")));
             app.manage(ExternalFiles::default());
             app.manage(SessionManager::default());
             app.manage(EditorSessions::default());
@@ -107,6 +109,14 @@ pub fn run() {
             saved_queries::write_external_sql,
             diagram::diagram_candidates,
             diagram::diagram_structure,
+            diagram::list_diagrams,
+            diagram::diagram_summary,
+            diagram::load_diagram,
+            diagram::create_diagram,
+            diagram::update_diagram,
+            diagram::rename_diagram,
+            diagram::duplicate_diagram,
+            diagram::delete_diagram,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

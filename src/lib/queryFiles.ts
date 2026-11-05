@@ -28,6 +28,6 @@ export type CloseQuestion = "save" | "commit";
  * the transaction, and about the transaction once the text is dealt with.
  */
 export function closeQuestion(kind: "table" | "view" | "data" | "query" | "diagram", textDirty: boolean, textHandled: boolean): CloseQuestion {
-  if (kind === "table" || kind === "view") return "save";
+  if (kind === "table" || kind === "view" || kind === "diagram") return "save";
   return kind === "query" && textDirty && !textHandled ? "save" : "commit";
 }

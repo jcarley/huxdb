@@ -7,8 +7,9 @@ import { useConnections } from "./connections";
 import { nodeKey } from "./explorer";
 import { sameSource } from "../lib/queryFiles";
 import type { QuerySource } from "../lib/queryFiles";
+import type { SavedDiagram } from "../lib/types";
 import { isDataDirty, useDataEditor } from "./dataEditor";
-import { useDiagrams } from "./diagram";
+import { isDiagramDirty, useDiagrams } from "./diagram";
 import { isQueryDirty, useQueryEditor } from "./queryEditor";
 import { isDirty as isTableDirty, useTableDesigner } from "./tableDesigner";
 import { isViewDirty, useViewDesigner } from "./viewDesigner";
@@ -53,6 +54,7 @@ interface TabsState {
   openQuery: (ref: SchemaRef) => void;
   /** A new diagram of these tables, always in a new tab. Its `schema` is empty: a diagram can span schemas. */
   openDiagram: (ref: SchemaRef, oids: number[]) => void;
+  openSavedDiagram: (connectionId: string, saved: SavedDiagram) => void;
   /** Opens a saved query or an external file, or focuses its tab. */
   openQuerySource: (ref: SchemaRef, name: string, source: QuerySource, sql: string, stamp: number | null) => void;
   /** Focuses the tab of a saved query or external file; false if none is open. */
@@ -103,7 +105,7 @@ export const isTabDirty = (tab: DesignerTab) => {
     case "query":
       return isQueryDirty(tab.id);
     case "diagram":
-      return false;
+      return isDiagramDirty(tab.id);
   }
 };
 
@@ -167,6 +169,12 @@ export const useTabs = create<TabsState>((set, get) => ({
     set((s) => ({ tabs: [...s.tabs, tab], activeId: tab.id }));
   },
 
+  openSavedDiagram: (connectionId, saved) => {
+    const tab: DesignerTab = { id: crypto.randomUUID(), kind: "diagram", connectionId, database: saved.database, schema: "", name: saved.name, source: { kind: "saved", id: saved.id } };
+    useDiagrams.getState().openSaved(tab, saved);
+    set((s) => ({ tabs: [...s.tabs, tab], activeId: tab.id }));
+  },
+
   openQuerySource: ({ connectionId, database, schema }, name, source, sql, stamp) => {
     if (get().focusSource(connectionId, source)) return;
     const tab: DesignerTab = { id: crypto.randomUUID(), kind: "query", connectionId, database, schema, name, source };
@@ -220,6 +228,7 @@ export const useTabs = create<TabsState>((set, get) => ({
     const key = schemaKey(ref);
     set((s) => ({ schemaVersions: { ...s.schemaVersions, [key]: (s.schemaVersions[key] ?? 0) + 1 } }));
     useCompletionCatalog.getState().refresh(ref.connectionId, ref.database);
+    useDiagrams.getState().databaseChanged(ref.connectionId, ref.database);
   },
 
   setQuitRequested: (value) => set({ quitRequested: value }),

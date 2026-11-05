@@ -2,6 +2,7 @@ import { Eye, Network, PencilRuler, SquareTerminal, Table, X } from "lucide-reac
 import { lazy, Suspense } from "react";
 import type { ReactNode } from "react";
 import { dataDirty, useDataEditor } from "../stores/dataEditor";
+import { diagramDirty, useDiagrams } from "../stores/diagram";
 import { queryDirty, useQueryEditor } from "../stores/queryEditor";
 import { designerDirty, useTableDesigner } from "../stores/tableDesigner";
 import { tabTitle, useTabs } from "../stores/tabs";
@@ -87,7 +88,7 @@ function DesignerTabButton({ tab, active }: { tab: DesignerTab; active: boolean 
     view: useViewDesigner((s) => viewDirty(s.designers[tab.id])),
     data: useDataEditor((s) => dataDirty(s.editors[tab.id])),
     query: useQueryEditor((s) => queryDirty(s.editors[tab.id])),
-    diagram: false,
+    diagram: useDiagrams((s) => diagramDirty(s.diagrams[tab.id])),
   };
   const dirty = dirtyByKind[tab.kind];
   const Icon = { table: PencilRuler, view: Eye, data: Table, query: SquareTerminal, diagram: Network }[tab.kind];

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import * as api from "../lib/api";
 import { errorMessage } from "../lib/api";
-import type { ConnectionConfig, SavedQuerySummary } from "../lib/types";
+import type { ConnectionConfig, DiagramSummary, SavedQuerySummary } from "../lib/types";
 import { useConnections } from "../stores/connections";
 import { Modal } from "./Modal";
 
@@ -16,12 +16,19 @@ function ConfirmDelete({ pendingDelete }: { pendingDelete: ConnectionConfig }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [queries, setQueries] = useState<SavedQuerySummary | null>(null);
-  const [deleteQueries, setDeleteQueries] = useState(false);
+  const [diagrams, setDiagrams] = useState<DiagramSummary | null>(null);
+  const [deleteFiles, setDeleteFiles] = useState(false);
   const queryCount = queries?.count ?? 0;
+  const diagramCount = diagrams?.count ?? 0;
+  const files = [
+    queryCount > 0 && (queryCount === 1 ? "saved query" : `${queryCount} saved queries`),
+    diagramCount > 0 && (diagramCount === 1 ? "diagram" : `${diagramCount} diagrams`),
+  ].filter(Boolean);
 
   useEffect(() => {
     let current = true;
     api.savedQuerySummary(pendingDelete.id).then((summary) => current && setQueries(summary)).catch(() => {});
+    api.diagramSummary(pendingDelete.id).then((summary) => current && setDiagrams(summary)).catch(() => {});
     return () => {
       current = false;
     };
@@ -31,7 +38,7 @@ function ConfirmDelete({ pendingDelete }: { pendingDelete: ConnectionConfig }) {
     setBusy(true);
     setError(null);
     try {
-      await confirmDelete(deleteQueries);
+      await confirmDelete(deleteFiles);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -44,13 +51,13 @@ function ConfirmDelete({ pendingDelete }: { pendingDelete: ConnectionConfig }) {
       <p>
         Are you sure you want to delete <strong>{pendingDelete.name}</strong>? This cannot be undone.
       </p>
-      {queryCount > 0 && (
+      {files.length > 0 && (
         <div className="mt-4 text-sm">
           <label className="label cursor-pointer justify-start gap-2 text-base-content">
-            <input type="checkbox" className="checkbox checkbox-sm" checked={deleteQueries} disabled={busy} onChange={(e) => setDeleteQueries(e.target.checked)} />
-            Also delete its {queryCount === 1 ? "saved query" : `${queryCount} saved queries`}
+            <input type="checkbox" className="checkbox checkbox-sm" checked={deleteFiles} disabled={busy} onChange={(e) => setDeleteFiles(e.target.checked)} />
+            Also delete its {files.join(" and ")}
           </label>
-          {!deleteQueries && <p className="mt-1 text-xs break-all text-base-content/60 select-text">Otherwise the files stay in {queries?.dir}</p>}
+          {!deleteFiles && <p className="mt-1 text-xs break-all text-base-content/60 select-text">Otherwise the files stay in {[queryCount > 0 && queries?.dir, diagramCount > 0 && diagrams?.dir].filter(Boolean).join(" and ")}</p>}
         </div>
       )}
       {error && <div className="alert alert-error mt-4 text-sm">{error}</div>}

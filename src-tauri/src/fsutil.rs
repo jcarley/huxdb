@@ -6,6 +6,23 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+/// Ids become path parts, and come from the frontend or a file name. A colon
+/// would make a Windows path absolute, or name an NTFS stream.
+pub fn path_part(id: &str) -> Result<&str, String> {
+    let bad = id.is_empty() || id == "." || id == ".." || id.contains(['/', '\\', ':', '\0']);
+    if bad { Err("Invalid id.".into()) } else { Ok(id) }
+}
+
+/// `<name> copy`, then `<name> copy 2` and so on, whichever is free.
+pub fn copy_name(name: &str, taken: &[String]) -> String {
+    let is_taken = |candidate: &str| taken.iter().any(|t| t.to_lowercase() == candidate.to_lowercase());
+    let first = format!("{name} copy");
+    if !is_taken(&first) {
+        return first;
+    }
+    (2..).map(|n| format!("{name} copy {n}")).find(|c| !is_taken(c)).expect("a free number")
+}
+
 /// Writes to a temp file in the same directory, then renames it over the target
 /// so a crash mid-write can't leave a truncated file. On Unix a new file is
 /// readable by the owner only, because these files can hold passwords;

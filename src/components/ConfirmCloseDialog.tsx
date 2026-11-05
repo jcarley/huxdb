@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useDataEditor } from "../stores/dataEditor";
 import { closeQuestion } from "../lib/queryFiles";
 import { queryTextDirty, useQueryEditor } from "../stores/queryEditor";
+import { useSavedDiagrams } from "../stores/savedDiagrams";
 import { useSavedQueries } from "../stores/savedQueries";
 import { useTableDesigner } from "../stores/tableDesigner";
 import { useViewDesigner } from "../stores/viewDesigner";
@@ -45,7 +46,17 @@ function ConfirmClose({ id }: { id: string }) {
     else cancelClose();
   };
 
+  const onSaveDiagram = async () => {
+    setBusy(true);
+    const saved = await useSavedDiagrams.getState().save(id);
+    setBusy(false);
+    // Either it failed, or it needs a name first, and the tab stays open.
+    if (saved) close(id);
+    else cancelClose();
+  };
+
   const onSave = async () => {
+    if (tab.kind === "diagram") return onSaveDiagram();
     if (isQuery && !commits) return onSaveText();
     const designer = commits ? null : tab.kind === "table" ? useTableDesigner.getState() : useViewDesigner.getState();
     if (designer?.designers[id]?.original === null) {

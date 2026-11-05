@@ -39,6 +39,10 @@ describe("closeQuestion", () => {
     expect(closeQuestion("data", false, false)).toBe("commit");
   });
 
+  it("asks a diagram to save, since it has no transaction", () => {
+    expect(closeQuestion("diagram", false, false)).toBe("save");
+  });
+
   it("asks a query tab about its text before its transaction", () => {
     expect(closeQuestion("query", true, false)).toBe("save");
     expect(closeQuestion("query", true, true)).toBe("commit");

@@ -4,6 +4,7 @@ import { useConnections } from "../../stores/connections";
 import { useExplorer } from "../../stores/explorer";
 import { ConnectionIcon } from "../ConnectionIcon";
 import { useContextMenu } from "./ContextMenu";
+import { DiagramsNode } from "./DiagramsNode";
 import type { MenuItem } from "./ContextMenu";
 import { DatabaseNode } from "./DatabaseNode";
 import { QueriesNode } from "./QueriesNode";
@@ -53,6 +54,7 @@ export function ConnectionNode({ connection }: { connection: ConnectionConfig })
         <DatabaseNode key={database} connectionId={connectionId} database={database} />
       ))}
       <QueriesNode connectionId={connectionId} />
+      <DiagramsNode connectionId={connectionId} />
     </TreeNode>
   );
 }

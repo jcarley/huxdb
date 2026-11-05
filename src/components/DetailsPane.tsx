@@ -1,5 +1,6 @@
-import { isGroupSelection, isQueriesSelection, nodeKey, useExplorer } from "../stores/explorer";
+import { isDiagramsSelection, isGroupSelection, isQueriesSelection, nodeKey, useExplorer } from "../stores/explorer";
 import { ConnectionDetails } from "./ConnectionDetails";
+import { DiagramsView } from "./objects/DiagramsView";
 import { QueriesView } from "./objects/QueriesView";
 import { TablesView } from "./objects/TablesView";
 import { ViewsView } from "./objects/ViewsView";
@@ -25,6 +26,11 @@ export function DetailsPane() {
   if (isQueriesSelection(selected)) {
     const { connectionId } = selected;
     return <QueriesView key={connectionId} connectionId={connectionId} selectedId={selected.kind === "query" ? selected.id : undefined} />;
+  }
+
+  if (isDiagramsSelection(selected)) {
+    const { connectionId } = selected;
+    return <DiagramsView key={connectionId} connectionId={connectionId} selectedId={selected.kind === "diagram" ? selected.id : undefined} />;
   }
 
   return <ConnectionDetails />;

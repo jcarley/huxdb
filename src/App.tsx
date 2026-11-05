@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ConfirmCloseDialog } from "./components/ConfirmCloseDialog";
+import { DiagramDialogs } from "./components/diagram/DiagramDialogs";
 import { DiagramPicker } from "./components/diagram/DiagramPicker";
 import { ConfirmDeleteDialog } from "./components/ConfirmDeleteDialog";
 import { ConnectionDialog } from "./components/ConnectionDialog";
@@ -44,6 +45,7 @@ function App() {
       <ConfirmCloseDialog />
       <SavedQueryDialogs />
       <DiagramPicker />
+      <DiagramDialogs />
     </div>
   );
 }

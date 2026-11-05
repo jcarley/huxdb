@@ -19,7 +19,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 
 use super::CHANGED_MARKER;
-use crate::fsutil::{modified_ms, write_atomic};
+use crate::fsutil::{copy_name, modified_ms, path_part, write_atomic};
 
 const MAX_NAME_CHARS: usize = 200;
 
@@ -67,13 +67,6 @@ pub struct SavedQueryStore {
     lock: Mutex<()>,
 }
 
-/// Ids become path parts, and come from the frontend or a file name. A colon
-/// would make a Windows path absolute, or name an NTFS stream.
-fn path_part(id: &str) -> Result<&str, String> {
-    let bad = id.is_empty() || id == "." || id == ".." || id.contains(['/', '\\', ':', '\0']);
-    if bad { Err("Invalid query or connection id.".into()) } else { Ok(id) }
-}
-
 fn clean_name(name: &str) -> Result<String, String> {
     let name = name.trim();
     if name.is_empty() {
@@ -83,16 +76,6 @@ fn clean_name(name: &str) -> Result<String, String> {
         return Err(format!("A query name can have at most {MAX_NAME_CHARS} characters."));
     }
     Ok(name.to_string())
-}
-
-/// `<name> copy`, then `<name> copy 2` and so on, whichever is free.
-fn copy_name(name: &str, taken: &[String]) -> String {
-    let is_taken = |candidate: &str| taken.iter().any(|t| t.to_lowercase() == candidate.to_lowercase());
-    let first = format!("{name} copy");
-    if !is_taken(&first) {
-        return first;
-    }
-    (2..).map(|n| format!("{name} copy {n}")).find(|c| !is_taken(c)).expect("a free number")
 }
 
 fn io_error(action: &str) -> impl Fn(io::Error) -> String {

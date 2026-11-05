@@ -9,6 +9,7 @@ use model::ConnectionConfig;
 use store::ConnectionStore;
 use tauri::State;
 
+use crate::diagram::store::DiagramStore;
 use crate::editor::EditorSessions;
 use crate::explorer::sessions::SessionManager;
 use crate::query::QuerySessions;
@@ -37,23 +38,28 @@ pub fn save_connection(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn delete_connection(
     store: State<'_, ConnectionStore>,
     sessions: State<'_, SessionManager>,
     editors: State<'_, EditorSessions>,
     queries: State<'_, QuerySessions>,
     saved: State<'_, SavedQueryStore>,
+    diagrams: State<'_, DiagramStore>,
     id: String,
-    delete_queries: bool,
+    delete_files: bool,
 ) -> Result<(), String> {
     store.delete(&id)?;
     editors.close_connection(&id);
     queries.close_connection(&id);
     sessions.close(&id);
-    if delete_queries {
+    if delete_files {
         // The connection is gone either way, and files left behind harm nothing.
         if let Err(err) = saved.delete_connection(&id) {
             eprintln!("huxdb: could not delete the saved queries of connection {id}: {err}");
+        }
+        if let Err(err) = diagrams.delete_connection(&id) {
+            eprintln!("huxdb: could not delete the diagrams of connection {id}: {err}");
         }
     }
     Ok(())

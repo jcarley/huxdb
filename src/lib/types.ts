@@ -662,6 +662,7 @@ export interface DiagramCandidate {
 export interface DiagramColumn {
   name: string;
   dataType: string;
+  notNull: boolean;
   primaryKey: boolean;
 }
 
@@ -687,3 +688,44 @@ export interface DiagramStructure {
   tables: DiagramTable[];
   foreignKeys: DiagramForeignKey[];
 }
+
+/** What the list shows about a saved diagram. */
+export interface DiagramInfo {
+  id: string;
+  name: string;
+  database: string;
+  objects: number;
+  modifiedMs: number | null;
+}
+
+export interface DiagramSummary {
+  count: number;
+  dir: string;
+}
+
+export interface DiagramViewport {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+/** Stored apart from the schema, so a refresh changes the snapshot and leaves positions alone. */
+export interface DiagramLayoutFile {
+  /** By `tableKey`. */
+  tables: Record<string, { x: number; y: number }>;
+  /** ELK's bend points, by `foreignKeyKey`. */
+  routes: Record<string, { x: number; y: number }[]>;
+  viewport: DiagramViewport | null;
+}
+
+/** What a saved diagram's file holds beyond its name and database. */
+export interface DiagramContent {
+  objects: number;
+  layout: DiagramLayoutFile;
+  /** The structure as last accepted, which drift is compared against. */
+  snapshot: DiagramStructure;
+  /** `tableKey` of every table the database had then. */
+  known: string[];
+}
+
+export interface SavedDiagram extends DiagramInfo, DiagramContent {}

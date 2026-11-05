@@ -8,7 +8,7 @@ const table = (oid: number, schema = "public", columns = 3): DiagramTable => ({
   oid,
   schema,
   name: `t${oid}`,
-  columns: Array.from({ length: columns }, (_, i) => ({ name: `c${i}`, dataType: "integer", primaryKey: i === 0 })),
+  columns: Array.from({ length: columns }, (_, i) => ({ name: `c${i}`, dataType: "integer", notNull: false, primaryKey: i === 0 })),
 });
 const fk = (oid: number, childOid: number, parentOid: number, childColumns = ["c1"], parentColumns = ["c0"]): DiagramForeignKey => ({
   oid,

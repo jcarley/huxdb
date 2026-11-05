@@ -5,15 +5,15 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { Channel } from "@tauri-apps/api/core";
-import type { CompletionCatalog, ConnectionConfig, DataPage, DataSpec, DataTarget, DiagramCandidate, DiagramStructure, EditBatch, ExternalFile, ExternalSql, QualifiedName, QueryEvent, QueryResult, QueryTarget, RunScope, SavedQuery, SavedQueryInfo, SavedQuerySummary, SchemaObjects, TableDesign, TableInfo, TextRange, ViewDesign, ViewInfo } from "./types";
+import type { CompletionCatalog, ConnectionConfig, DataPage, DataSpec, DataTarget, DiagramCandidate, DiagramContent, DiagramInfo, DiagramStructure, DiagramSummary, EditBatch, ExternalFile, ExternalSql, QualifiedName, QueryEvent, QueryResult, QueryTarget, RunScope, SavedDiagram, SavedQuery, SavedQueryInfo, SavedQuerySummary, SchemaObjects, TableDesign, TableInfo, TextRange, ViewDesign, ViewInfo } from "./types";
 
 export const listConnections = () => invoke<ConnectionConfig[]>("list_connections");
 
 export const saveConnection = (config: ConnectionConfig) =>
   invoke<ConnectionConfig>("save_connection", { config });
 
-/** `deleteQueries` also removes its saved queries; otherwise their files stay. */
-export const deleteConnection = (id: string, deleteQueries: boolean) => invoke<void>("delete_connection", { id, deleteQueries });
+/** `deleteFiles` also removes its saved queries and diagrams; otherwise their files stay. */
+export const deleteConnection = (id: string, deleteFiles: boolean) => invoke<void>("delete_connection", { id, deleteFiles });
 
 /** Resolves to the server's `version()` string. */
 export const testConnection = (config: ConnectionConfig) =>
@@ -47,6 +47,25 @@ export const diagramCandidates = (connectionId: string, database: string) =>
 
 export const diagramStructure = (connectionId: string, database: string, oids: number[]) =>
   invoke<DiagramStructure>("diagram_structure", { connectionId, database, oids });
+
+export const listDiagrams = (connectionId: string) => invoke<DiagramInfo[]>("list_diagrams", { connectionId });
+
+export const diagramSummary = (connectionId: string) => invoke<DiagramSummary>("diagram_summary", { connectionId });
+
+export const loadDiagram = (connectionId: string, id: string) => invoke<SavedDiagram>("load_diagram", { connectionId, id });
+
+export const createDiagram = (connectionId: string, name: string, database: string, content: DiagramContent) =>
+  invoke<DiagramInfo>("create_diagram", { connectionId, name, database, content });
+
+/** Rejects with `CHANGED_MARKER` if the file changed since `expectedModifiedMs`. */
+export const updateDiagram = (connectionId: string, id: string, content: DiagramContent, expectedModifiedMs: number | null) =>
+  invoke<DiagramInfo>("update_diagram", { connectionId, id, content, expectedModifiedMs });
+
+export const renameDiagram = (connectionId: string, id: string, name: string) => invoke<DiagramInfo>("rename_diagram", { connectionId, id, name });
+
+export const duplicateDiagram = (connectionId: string, id: string) => invoke<DiagramInfo>("duplicate_diagram", { connectionId, id });
+
+export const deleteDiagram = (connectionId: string, id: string) => invoke<void>("delete_diagram", { connectionId, id });
 
 // Table designer (`src-tauri/src/designer/mod.rs`).
 
