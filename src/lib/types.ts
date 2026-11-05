@@ -652,11 +652,16 @@ export interface ExternalSql extends ExternalFile {
   sql: string;
 }
 
-/** A table a diagram can hold. */
+export type DiagramObjectKind = "table" | "view" | "materialized-view" | "function" | "procedure";
+
+/** An object a diagram can hold. */
 export interface DiagramCandidate {
   oid: number;
   schema: string;
   name: string;
+  kind: DiagramObjectKind;
+  /** Argument list of a function or procedure; null for a relation. */
+  signature: string | null;
 }
 
 export interface DiagramColumn {
@@ -668,9 +673,13 @@ export interface DiagramColumn {
 }
 
 export interface DiagramTable {
+  /** Negative for a function: opaque to the frontend. */
   oid: number;
   schema: string;
   name: string;
+  /** Absent in diagrams saved before views and functions: a table. */
+  kind?: DiagramObjectKind;
+  signature?: string | null;
   comment: string | null;
   columns: DiagramColumn[];
 }
@@ -701,9 +710,28 @@ export interface DiagramForeignKey {
   enforced: boolean;
 }
 
+/** A view or function (by OID) reading from another object. */
+export interface DiagramDependency {
+  dependentOid: number;
+  sourceOid: number;
+}
+
 export interface DiagramStructure {
   tables: DiagramTable[];
   foreignKeys: DiagramForeignKey[];
+  dependencies?: DiagramDependency[];
+}
+
+/** Where a view column's value comes from. */
+export interface ColumnOrigin {
+  schema: string;
+  relation: string;
+  column: string | null;
+}
+
+export interface ViewColumnSource {
+  column: string;
+  source: ColumnOrigin | null;
 }
 
 /** What the list shows about a saved diagram. */

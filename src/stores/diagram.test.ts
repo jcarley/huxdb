@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../lib/api";
 import { tableKey } from "../lib/diagramDrift";
-import type { DiagramColumn, DiagramStructure, DiagramTable, SavedDiagram } from "../lib/types";
+import type { DiagramCandidate, DiagramColumn, DiagramStructure, DiagramTable, SavedDiagram } from "../lib/types";
+import type { DiagramEdge } from "../lib/diagramFlow";
 import { DEFAULT_OPTIONS } from "../lib/diagramLayout";
 import { useDiagrams } from "./diagram";
 
@@ -38,6 +39,7 @@ const elk = vi.hoisted(() => {
 vi.mock("../lib/api", () => ({
   diagramStructure: vi.fn(),
   diagramCandidates: vi.fn(),
+  diagramViewSources: vi.fn(),
   errorMessage: (e: unknown) => String(e),
 }));
 vi.mock("../lib/diagramBrowser", () => ({
@@ -50,16 +52,17 @@ vi.mock("../lib/diagramBrowser", () => ({
 const column = (name: string, more: Partial<DiagramColumn> = {}): DiagramColumn => ({ name, dataType: "bigint", notNull: false, primaryKey: false, comment: null, ...more });
 const table = (oid: number, name: string, columns = [column("id")]): DiagramTable => ({ oid, schema: "public", name, comment: null, columns });
 const structure = (...tables: DiagramTable[]): DiagramStructure => ({ tables, foreignKeys: [] });
-const candidates = (s: DiagramStructure) => s.tables.map(({ oid, schema, name }) => ({ oid, schema, name }));
+const candidates = (s: DiagramStructure): DiagramCandidate[] => s.tables.map(({ oid, schema, name }) => ({ oid, schema, name, kind: "table", signature: null }));
 const tab = { id: "t", connectionId: "c", database: "db" };
 const loadStructure = vi.mocked(api.diagramStructure);
 const loadCandidates = vi.mocked(api.diagramCandidates);
+const viewSources = vi.mocked(api.diagramViewSources);
 const store = () => useDiagrams.getState();
 const editor = () => store().diagrams.t;
 const settled = () => new Promise((r) => setTimeout(r));
 
 /** The database as it is now. */
-const database = (s: DiagramStructure, extra: { oid: number; schema: string; name: string }[] = []) => {
+const database = (s: DiagramStructure, extra: DiagramCandidate[] = []) => {
   loadStructure.mockImplementation(async (_c, _d, oids) => ({ ...s, tables: s.tables.filter((t) => oids.includes(t.oid)) }));
   loadCandidates.mockResolvedValue([...candidates(s), ...extra]);
 };
@@ -90,6 +93,7 @@ const drag = (x: number) => {
 beforeEach(() => {
   loadStructure.mockReset();
   loadCandidates.mockReset();
+  viewSources.mockReset();
   loadCandidates.mockResolvedValue([]);
   useDiagrams.setState({ diagrams: {}, picker: null });
 });
@@ -181,7 +185,7 @@ describe("opening a saved diagram", () => {
   });
 
   it("doesn't add a new table by itself", async () => {
-    database(s, [{ oid: 3, schema: "public", name: "brand_new" }]);
+    database(s, [{ oid: 3, schema: "public", name: "brand_new", kind: "table", signature: null }]);
     await openSaved(savedDiagram(s));
     expect(editor().nodes).toHaveLength(2);
     expect(editor().report?.added.map((c) => c.name)).toEqual(["brand_new"]);
@@ -420,7 +424,7 @@ describe("auto layout", () => {
   it("leaves other tables alone, keeps the selection's corner, and drops lines leaving it", async () => {
     await opened();
     await store().autoLayout("t");
-    const edges = editor().edges.map((e) => ({ ...e, data: { ...e.data!, points: [{ x: 1, y: 1 }] } }));
+    const edges = editor().edges.map((e) => ({ ...e, data: { ...e.data!, points: [{ x: 1, y: 1 }] } }) as DiagramEdge);
     store().setEdges("t", edges);
     const before = places();
     elk.step = 900;
@@ -565,5 +569,56 @@ describe("changing the tables", () => {
     expect(editor().nodes[0].position).toEqual(place);
     expect(editor()).toMatchObject({ offerLayout: true, dirty: true, report: null });
     expect(store().content("t")?.layout.tables[tableKey(table(1, "a"))]).toBeUndefined();
+  });
+});
+
+describe("tracing a view", () => {
+  const columns = [{ column: "id", source: { schema: "public", relation: "orders", column: "id" } }];
+  const openView = async () => {
+    database(structure({ ...table(7, "v"), kind: "view" }));
+    store().open(tab, [7]);
+    await settled();
+  };
+
+  it("runs when a view is selected, and not again while loading or ready", async () => {
+    await openView();
+    viewSources.mockResolvedValue(columns);
+    store().selectNode("t", "7");
+    store().selectNode("t", "7");
+    expect(editor().traces[7]).toEqual({ status: "loading" });
+    await settled();
+    store().selectNode("t", "7");
+    expect(viewSources).toHaveBeenCalledTimes(1);
+    expect(viewSources).toHaveBeenCalledWith("c", "db", 7);
+    expect(editor().traces[7]).toEqual({ status: "ready", columns });
+  });
+
+  it("doesn't run for a table", async () => {
+    database(structure(table(1, "orders")));
+    store().open(tab, [1]);
+    await settled();
+    store().selectNode("t", "1");
+    expect(viewSources).not.toHaveBeenCalled();
+  });
+
+  it("stores a failure, and runs again on retry", async () => {
+    await openView();
+    viewSources.mockRejectedValueOnce("boom");
+    await store().traceView("t", 7);
+    expect(editor().traces[7]).toEqual({ status: "error", error: "boom" });
+    viewSources.mockResolvedValue(columns);
+    await store().traceView("t", 7);
+    expect(editor().traces[7]).toEqual({ status: "ready", columns });
+  });
+
+  it("drops an answer that arrives after the traces were cleared", async () => {
+    await openView();
+    let answer: (c: typeof columns) => void = () => {};
+    viewSources.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    const running = store().traceView("t", 7);
+    useDiagrams.setState((s) => ({ diagrams: { ...s.diagrams, t: { ...s.diagrams.t, traces: {} } } }));
+    answer(columns);
+    await running;
+    expect(editor().traces).toEqual({});
   });
 });

@@ -6,7 +6,7 @@
 // taken out, what's left falls into clusters, ELK lays out each one, and the results are packed.
 
 import type { ElkExtendedEdge, ElkNode } from "elkjs/lib/elk-api";
-import type { DiagramColumn, DiagramForeignKey, DiagramOptions, DiagramStructure, DiagramTable } from "./types";
+import type { DiagramColumn, DiagramDependency, DiagramOptions, DiagramStructure, DiagramTable } from "./types";
 
 export const DEFAULT_OPTIONS: DiagramOptions = { showFieldComments: false, showNotNull: false, showObjectComments: false, showSchemaNames: false, showRelationshipNames: true, fontSize: 11, blackAndWhite: false, objectDistance: 40, layoutQuality: "normal", groupBySchema: false };
 
@@ -19,6 +19,26 @@ export const defaultOptions = ({ tables, foreignKeys }: DiagramStructure): Diagr
   showSchemaNames: new Set(tables.map((t) => t.schema)).size > 1,
   showRelationshipNames: foreignKeys.length <= NAMED_LINES_LIMIT,
 });
+
+/** The column a view or function line meets: the header, since a name can't be empty in PostgreSQL. */
+export const HEADER = "";
+
+/** What the layout needs of a line, whether a foreign key or a view's dependency. */
+export interface LayoutEdge {
+  id: string;
+  childOid: number;
+  parentOid: number;
+  childColumn: string;
+  parentColumn: string;
+}
+
+export const dependencyId = ({ dependentOid, sourceOid }: DiagramDependency) => `dep:${dependentOid}:${sourceOid}`;
+
+/** Foreign keys, then dependencies. A file from before views has no dependencies. */
+export const layoutEdges = ({ foreignKeys, dependencies = [] }: DiagramStructure): LayoutEdge[] => [
+  ...foreignKeys.map((fk) => ({ id: String(fk.oid), childOid: fk.childOid, parentOid: fk.parentOid, childColumn: fk.childColumns[0], parentColumn: fk.parentColumns[0] })),
+  ...dependencies.map((d) => ({ id: dependencyId(d), childOid: d.dependentOid, parentOid: d.sourceOid, childColumn: HEADER, parentColumn: HEADER })),
+];
 
 export const headerHeight = ({ fontSize }: DiagramOptions) => Math.round(fontSize * 2.4);
 export const rowHeight = ({ fontSize }: DiagramOptions) => Math.round(fontSize * 1.65);
@@ -54,10 +74,10 @@ export interface Point {
 }
 export interface Layout {
   positions: Map<number, Point>;
-  /** Bend points per foreign key, for those ELK routed. */
-  routes: Map<number, Point[]>;
-  /** Foreign keys touching a hub, which have no route and stay hidden until selected. */
-  hubEdges: Set<number>;
+  /** Bend points per line, for those ELK routed. */
+  routes: Map<string, Point[]>;
+  /** Lines touching a hub, which have no route and stay hidden until selected. */
+  hubEdges: Set<string>;
 }
 
 export type Measure = (text: string, bold: boolean, fontSize: number) => number;
@@ -71,17 +91,20 @@ export function tableBox(table: DiagramTable, measure: Measure, options = DEFAUL
   const scale = fontSize / DEFAULT_OPTIONS.fontSize;
   const title = options.showSchemaNames ? `${table.schema}.${table.name}` : table.name;
   // Header: name, then the column count a capped table shows.
-  let width = measure(title, true, fontSize) + (capped ? 90 * scale : 40);
+  // A view has an icon before its name, and a function or procedure also has an info icon, each an icon and a gap wide.
+  const icons = table.kind === "function" || table.kind === "procedure" ? 3 : table.kind && table.kind !== "table" ? 1.5 : 0;
+  let width = measure(title, true, fontSize) + (capped ? 90 * scale : 40) + fontSize * icons;
   for (const c of table.columns) width = Math.max(width, measure(`${c.name}: ${c.dataType}${rowSuffix(c, options)}`, false, fontSize) + 44 * scale);
   return {
     width: Math.ceil(Math.min(width + (capped ? SCROLLBAR : 0), MAX_WIDTH)),
-    height: rowsTop(table, options) + Math.min(table.columns.length, MAX_ROWS) * rowHeight(options) + 2,
+    // The border: 1px a side, 2px for a materialized view.
+    height: rowsTop(table, options) + Math.min(table.columns.length, MAX_ROWS) * rowHeight(options) + (table.kind === "materialized-view" ? 4 : 2),
   };
 }
 
-/** Where a column's line meets its table. A row in a capped table can scroll away, so its lines meet the header. */
+/** Where a column's line meets its table. The header takes the lines of a view or function, and a row in a capped table can scroll away, so its lines meet the header. */
 export function columnOffset(table: DiagramTable, column: string, options = DEFAULT_OPTIONS) {
-  if (isCapped(table)) return headerHeight(options) / 2;
+  if (column === HEADER || isCapped(table)) return headerHeight(options) / 2;
   const row = rowHeight(options);
   return rowsTop(table, options) + Math.max(0, table.columns.findIndex((c) => c.name === column)) * row + row / 2;
 }
@@ -119,19 +142,19 @@ export interface Partition {
   clusters: DiagramTable[][];
   /** Tables with no such key, grouped by the hub they lean on. */
   loners: DiagramTable[][];
-  inner: DiagramForeignKey[];
-  hubEdges: Set<number>;
+  inner: LayoutEdge[];
+  hubEdges: Set<string>;
 }
 
-export function partition(tables: DiagramTable[], foreignKeys: DiagramForeignKey[]): Partition {
+export function partition(tables: DiagramTable[], edges: LayoutEdge[]): Partition {
   const incoming = new Map<number, number>();
-  for (const fk of foreignKeys) {
-    if (fk.childOid !== fk.parentOid) incoming.set(fk.parentOid, (incoming.get(fk.parentOid) ?? 0) + 1);
+  for (const e of edges) {
+    if (e.childOid !== e.parentOid) incoming.set(e.parentOid, (incoming.get(e.parentOid) ?? 0) + 1);
   }
   const limit = hubLimit(tables.length);
   const hubOids = new Set([...incoming].filter(([, n]) => n > limit).map(([oid]) => oid));
-  const touchesHub = (fk: DiagramForeignKey) => hubOids.has(fk.parentOid) || hubOids.has(fk.childOid);
-  const inner = foreignKeys.filter((fk) => !touchesHub(fk));
+  const touchesHub = (e: LayoutEdge) => hubOids.has(e.parentOid) || hubOids.has(e.childOid);
+  const inner = edges.filter((e) => !touchesHub(e));
 
   const parent = new Map(tables.map((t) => [t.oid, t.oid]));
   const find = (start: number) => {
@@ -142,7 +165,7 @@ export function partition(tables: DiagramTable[], foreignKeys: DiagramForeignKey
     }
     return x;
   };
-  for (const fk of inner) parent.set(find(fk.childOid), find(fk.parentOid));
+  for (const e of inner) parent.set(find(e.childOid), find(e.parentOid));
 
   const groups = new Map<number, DiagramTable[]>();
   for (const t of tables) {
@@ -157,7 +180,7 @@ export function partition(tables: DiagramTable[], foreignKeys: DiagramForeignKey
       clusters.push(group);
       continue;
     }
-    const hub = foreignKeys.find((fk) => fk.childOid === group[0].oid && hubOids.has(fk.parentOid))?.parentOid ?? 0;
+    const hub = edges.find((e) => e.childOid === group[0].oid && hubOids.has(e.parentOid))?.parentOid ?? 0;
     leaningOn.set(hub, [...(leaningOn.get(hub) ?? []), group[0]]);
   }
   return {
@@ -165,9 +188,14 @@ export function partition(tables: DiagramTable[], foreignKeys: DiagramForeignKey
     clusters,
     loners: [...leaningOn.values()],
     inner,
-    hubEdges: new Set(foreignKeys.filter(touchesHub).map((fk) => fk.oid)),
+    hubEdges: new Set(edges.filter(touchesHub).map((e) => e.id)),
   };
 }
+
+const DISTANCES = [20, 30, 40, 60, 80, 120];
+
+/** The Object Distance values to offer, keeping a saved one that isn't among them. */
+export const distanceChoices = (current: number) => [...new Set([...DISTANCES, current])].sort((x, y) => x - y);
 
 /** Every gap comes from Object Distance, so tables, clusters and blocks stay in proportion. */
 export const layoutGaps = ({ objectDistance: d, showRelationshipNames }: DiagramOptions) => ({
@@ -199,8 +227,8 @@ export function elkOptions(options: DiagramOptions): Record<string, string> {
   };
 }
 
-/** ELK's graph for one cluster, with a fixed port where each foreign key meets its column. */
-export function clusterGraph(cluster: DiagramTable[], foreignKeys: DiagramForeignKey[], boxes: Map<number, Box>, options = DEFAULT_OPTIONS): ElkNode {
+/** ELK's graph for one cluster, with a fixed port where each line meets its column. All of a table's lines to its header on one side share a port. */
+export function clusterGraph(cluster: DiagramTable[], lines: LayoutEdge[], boxes: Map<number, Box>, options = DEFAULT_OPTIONS): ElkNode {
   const members = new Map(cluster.map((t) => [t.oid, t]));
   const ports = new Map<number, Map<string, NonNullable<ElkNode["ports"]>[number]>>(cluster.map((t) => [t.oid, new Map()]));
   const port = (oid: number, column: string, side: "EAST" | "WEST") => {
@@ -215,13 +243,13 @@ export function clusterGraph(cluster: DiagramTable[], foreignKeys: DiagramForeig
     });
     return id;
   };
-  const edges: ElkExtendedEdge[] = foreignKeys
+  const edges: ElkExtendedEdge[] = lines
     // A self-reference draws its own loop, which needs no route and survives a drag.
-    .filter((fk) => members.has(fk.childOid) && members.has(fk.parentOid) && fk.childOid !== fk.parentOid)
-    .map((fk) => ({
-      id: String(fk.oid),
-      sources: [port(fk.childOid, fk.childColumns[0], "EAST")],
-      targets: [port(fk.parentOid, fk.parentColumns[0], "WEST")],
+    .filter((e) => members.has(e.childOid) && members.has(e.parentOid) && e.childOid !== e.parentOid)
+    .map((e) => ({
+      id: e.id,
+      sources: [port(e.childOid, e.childColumn, "EAST")],
+      targets: [port(e.parentOid, e.parentColumn, "WEST")],
     }));
   return {
     id: "cluster",
@@ -238,13 +266,13 @@ export function clusterGraph(cluster: DiagramTable[], foreignKeys: DiagramForeig
 
 interface Block extends Box {
   items: { oid: number; x: number; y: number }[];
-  routes: { id: number; points: Point[] }[];
+  routes: { id: string; points: Point[] }[];
 }
 
-/** The foreign keys with both ends among these tables, which is all `partition` can take. */
-export const keysWithin = (tables: DiagramTable[], foreignKeys: DiagramForeignKey[]) => {
+/** The lines with both ends among these tables, which is all `partition` can take. */
+export const keysWithin = (tables: DiagramTable[], edges: LayoutEdge[]) => {
   const oids = new Set(tables.map((t) => t.oid));
-  return foreignKeys.filter((fk) => oids.has(fk.childOid) && oids.has(fk.parentOid));
+  return edges.filter((e) => oids.has(e.childOid) && oids.has(e.parentOid));
 };
 
 /** The corner and size of what's placed. */
@@ -274,16 +302,16 @@ export function placedAt({ positions, routes, hubEdges }: Layout, boxes: Map<num
 }
 
 /** Each schema laid out alone, then packed. A line between schemas has no route, so it draws the plain path. */
-async function layoutBySchema(tables: DiagramTable[], foreignKeys: DiagramForeignKey[], boxes: Map<number, Box>, run: RunLayout, options: DiagramOptions): Promise<Layout> {
+async function layoutBySchema(tables: DiagramTable[], edges: LayoutEdge[], boxes: Map<number, Box>, run: RunLayout, options: DiagramOptions): Promise<Layout> {
   const schemas = new Map<string, DiagramTable[]>();
   for (const table of tables) schemas.set(table.schema, [...(schemas.get(table.schema) ?? []), table]);
 
   const parts: Layout[] = [];
-  for (const group of schemas.values()) parts.push(await layoutTables(group, keysWithin(group, foreignKeys), boxes, run, options));
+  for (const group of schemas.values()) parts.push(await layoutTables(group, keysWithin(group, edges), boxes, run, options));
   const { corners } = shelves(parts.map((part) => bounds(part.positions, boxes)), layoutGaps(options).block * 2);
 
   // Hubs are the whole diagram's, as they are after a save, whatever each schema made of them.
-  const { hubEdges } = partition(tables, foreignKeys);
+  const { hubEdges } = partition(tables, edges);
   const positions: Layout["positions"] = new Map();
   const routes: Layout["routes"] = new Map();
   parts.forEach((part, i) => {
@@ -294,11 +322,11 @@ async function layoutBySchema(tables: DiagramTable[], foreignKeys: DiagramForeig
   return { positions, routes, hubEdges };
 }
 
-export const layoutDiagram = (tables: DiagramTable[], foreignKeys: DiagramForeignKey[], boxes: Map<number, Box>, run: RunLayout, options = DEFAULT_OPTIONS): Promise<Layout> =>
-  (options.groupBySchema ? layoutBySchema : layoutTables)(tables, foreignKeys, boxes, run, options);
+export const layoutDiagram = (tables: DiagramTable[], edges: LayoutEdge[], boxes: Map<number, Box>, run: RunLayout, options = DEFAULT_OPTIONS): Promise<Layout> =>
+  (options.groupBySchema ? layoutBySchema : layoutTables)(tables, edges, boxes, run, options);
 
-async function layoutTables(tables: DiagramTable[], foreignKeys: DiagramForeignKey[], boxes: Map<number, Box>, run: RunLayout, options: DiagramOptions): Promise<Layout> {
-  const { hubs, clusters, loners, inner, hubEdges } = partition(tables, foreignKeys);
+async function layoutTables(tables: DiagramTable[], edges: LayoutEdge[], boxes: Map<number, Box>, run: RunLayout, options: DiagramOptions): Promise<Layout> {
+  const { hubs, clusters, loners, inner, hubEdges } = partition(tables, edges);
   const gaps = layoutGaps(options);
   const grid = (group: DiagramTable[], gap: number): Block => {
     const packed = shelves(group.map((t) => boxes.get(t.oid)!), gap);
@@ -314,7 +342,7 @@ async function layoutTables(tables: DiagramTable[], foreignKeys: DiagramForeignK
       items: (out.children ?? []).map((c) => ({ oid: Number(c.id), x: c.x ?? 0, y: c.y ?? 0 })),
       routes: ((out.edges ?? []) as ElkExtendedEdge[]).flatMap((e) => {
         const section = e.sections?.[0];
-        return section ? [{ id: Number(e.id), points: section.bendPoints ?? [] }] : [];
+        return section ? [{ id: e.id, points: section.bendPoints ?? [] }] : [];
       }),
     });
   }

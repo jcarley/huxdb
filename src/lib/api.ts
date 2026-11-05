@@ -5,7 +5,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { Channel } from "@tauri-apps/api/core";
-import type { CompletionCatalog, ConnectionConfig, DataPage, DataSpec, DataTarget, DiagramCandidate, DiagramContent, DiagramInfo, DiagramStructure, DiagramSummary, EditBatch, ExternalFile, ExternalSql, QualifiedName, QueryEvent, QueryResult, QueryTarget, RunScope, SavedDiagram, SavedQuery, SavedQueryInfo, SavedQuerySummary, SchemaObjects, TableDesign, TableInfo, TextRange, ViewDesign, ViewInfo } from "./types";
+import type { CompletionCatalog, ConnectionConfig, DataPage, DataSpec, DataTarget, DiagramCandidate, DiagramContent, DiagramInfo, DiagramStructure, DiagramSummary, EditBatch, ExternalFile, ExternalSql, QualifiedName, QueryEvent, QueryResult, QueryTarget, RunScope, SavedDiagram, SavedQuery, SavedQueryInfo, SavedQuerySummary, SchemaObjects, TableDesign, TableInfo, TextRange, ViewColumnSource, ViewDesign, ViewInfo } from "./types";
 
 export const listConnections = () => invoke<ConnectionConfig[]>("list_connections");
 
@@ -47,6 +47,9 @@ export const diagramCandidates = (connectionId: string, database: string) =>
 
 export const diagramStructure = (connectionId: string, database: string, oids: number[]) =>
   invoke<DiagramStructure>("diagram_structure", { connectionId, database, oids });
+
+export const diagramViewSources = (connectionId: string, database: string, oid: number) =>
+  invoke<ViewColumnSource[]>("diagram_view_sources", { connectionId, database, oid });
 
 export const diagramRelated = (connectionId: string, database: string, oids: number[]) =>
   invoke<number[]>("diagram_related", { connectionId, database, oids });

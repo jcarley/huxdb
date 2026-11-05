@@ -214,7 +214,7 @@ async fn read_only(pool: &PgPool) -> Result<Transaction<'static, Postgres>, Stri
 
 /// The definition without a trailing semicolon. Wrapping it in a subquery (or
 /// preparing it) rejects anything but a single query.
-fn query_text(definition: &str) -> &str {
+pub(crate) fn query_text(definition: &str) -> &str {
     let d = definition.trim();
     d.strip_suffix(';').unwrap_or(d).trim_end()
 }

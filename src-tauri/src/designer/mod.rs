@@ -8,6 +8,7 @@ mod view;
 mod view_postgres;
 
 pub(crate) use postgres::{qualified, quote_ident};
+pub(crate) use view_postgres::query_text;
 
 use model::TableDesign;
 use view::ViewDesign;

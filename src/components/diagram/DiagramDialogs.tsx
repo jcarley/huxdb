@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { errorMessage } from "../../lib/api";
+import { objectLabel } from "../../lib/diagramDrift";
 import type { DriftReport } from "../../lib/diagramDrift";
 import { useDiagrams } from "../../stores/diagram";
 import { useSavedDiagrams } from "../../stores/savedDiagrams";
@@ -158,12 +159,12 @@ function Report({ tabId }: { tabId: string }) {
   return (
     <Modal title="Changes in the Database" onClose={() => setPrompt(null)} dismissible={!busy} className="flex max-h-[80vh] max-w-xl flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto select-text">
-        <Section title="New tables" count={added.length}>
+        <Section title="New objects" count={added.length}>
           {added.map((c) => (
             <li key={c.oid}>
               <label className="flex items-center gap-2 rounded py-0.5 hover:bg-base-200">
                 <input type="checkbox" className="checkbox checkbox-xs" checked={add.has(c.oid)} disabled={busy} onChange={(e) => setAdd(flip(add, c.oid, e.target.checked))} />
-                <span>Add {c.schema}.{c.name}</span>
+                <span>Add {c.schema}.{objectLabel(c)}</span>
               </label>
             </li>
           ))}
@@ -171,12 +172,12 @@ function Report({ tabId }: { tabId: string }) {
         <Section title="Removed" count={removed.length}>
           {removed.map((r) => (
             <li key={r.key} className="py-0.5">
-              {r.schema}.{r.name}
+              {r.schema}.{objectLabel(r)}
               {r.renamedTo && (
                 <label className="ml-1 flex items-center gap-2 rounded py-0.5 hover:bg-base-200">
                   <input type="checkbox" className="checkbox checkbox-xs" checked={renames.has(r.key)} disabled={busy} onChange={(e) => setRenames(flip(renames, r.key, e.target.checked))} />
                   <span>
-                    Possibly renamed to {r.renamedTo.schema}.{r.renamedTo.name}. Keep its place
+                    Possibly renamed to {r.renamedTo.schema}.{objectLabel(r.renamedTo)}. Keep its place
                   </span>
                 </label>
               )}
@@ -186,7 +187,7 @@ function Report({ tabId }: { tabId: string }) {
         <Section title="Modified" count={modified.length}>
           {modified.map((m) => (
             <li key={m.key} className="py-0.5">
-              {m.schema}.{m.name}
+              {m.schema}.{objectLabel(m)}
               <ul className="ml-4 text-base-content/70">
                 {m.changes.map((change) => (
                   <li key={change}>{change}</li>

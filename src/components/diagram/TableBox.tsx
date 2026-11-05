@@ -1,12 +1,16 @@
 import { Handle, Position, useStore } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
-import { KeyRound, Link2 } from "lucide-react";
+import { Info, KeyRound, Link2 } from "lucide-react";
 import { memo } from "react";
 import { DIAGRAM_FONT } from "../../lib/diagramBrowser";
 import type { TableNode } from "../../lib/diagramFlow";
 import { headerHeight, isCapped, MAX_ROWS, rowHeight, rowSuffix } from "../../lib/diagramLayout";
+import type { DiagramObjectKind } from "../../lib/types";
 import { useDiagrams } from "../../stores/diagram";
+import { objectKind, objectLabel } from "../../lib/diagramDrift";
+import { FUNCTION_NOTE } from "../../lib/diagramTrace";
 import { useDiagramId } from "./DiagramId";
+import { OBJECT_ICONS } from "./objectIcons";
 
 /** Below this zoom a row can't be read, and drawing them halves the frame rate at 300 tables. */
 const ROWS_FROM_ZOOM = 0.35;
@@ -28,11 +32,23 @@ function useHighlighted(oid: number) {
   });
 }
 
+const STYLES: Record<DiagramObjectKind, { outline: string; header: string }> = {
+  table: { outline: "border border-primary/60", header: "bg-primary text-primary-content" },
+  view: { outline: "border border-dashed border-primary/60", header: "bg-primary/15 text-base-content" },
+  "materialized-view": { outline: "border-2 border-dashed border-primary/60", header: "bg-primary/15 text-base-content" },
+  function: { outline: "border border-secondary/60", header: "bg-secondary/15 text-base-content" },
+  procedure: { outline: "border border-secondary/60", header: "bg-secondary/15 text-base-content" },
+};
+
 export const TableBox = memo(function TableBox({ data, width, height }: NodeProps<TableNode>) {
   const { table, handles, foreignKeyColumns, options } = data;
   const showRows = useStore((s) => s.transform[2] >= ROWS_FROM_ZOOM);
   const highlighted = useHighlighted(table.oid);
   const capped = isCapped(table);
+  const kind = objectKind(table);
+  const style = STYLES[kind];
+  const Icon = OBJECT_ICONS[kind];
+  const routine = kind === "function" || kind === "procedure";
   const title = options.showSchemaNames ? `${table.schema}.${table.name}` : table.name;
   const row = rowHeight(options);
   const header = headerHeight(options);
@@ -40,13 +56,15 @@ export const TableBox = memo(function TableBox({ data, width, height }: NodeProp
 
   return (
     <div
-      className="flex flex-col overflow-hidden rounded-lg border border-primary/60 bg-base-100 leading-none text-base-content shadow-sm in-[.selected]:border-primary in-[.selected]:ring-2 in-[.selected]:ring-primary/40"
+      className={`flex flex-col overflow-hidden rounded-lg ${style.outline} bg-base-100 leading-none text-base-content shadow-sm in-[.selected]:border-primary in-[.selected]:ring-2 in-[.selected]:ring-primary/40`}
       style={{ width, height, fontSize: options.fontSize, fontFamily: `${DIAGRAM_FONT}, system-ui, sans-serif` }}
     >
-      <div className="flex shrink-0 items-center justify-center gap-1.5 bg-primary px-2 font-semibold text-primary-content" style={{ height: header }}>
-        <span className="truncate" title={title}>
+      <div className={`flex shrink-0 items-center justify-center gap-1.5 px-2 font-semibold ${style.header}`} style={{ height: header }}>
+        {kind !== "table" && <Icon className="shrink-0" style={icon} />}
+        <span className="truncate" title={routine ? objectLabel(table) : title}>
           {title}
         </span>
+        {routine && <Info className="shrink-0 opacity-60" style={icon} aria-label={FUNCTION_NOTE}><title>{FUNCTION_NOTE}</title></Info>}
         {capped && <span className="shrink-0 font-normal opacity-75">{table.columns.length} columns</span>}
       </div>
       {options.showObjectComments && table.comment && (
@@ -57,11 +75,11 @@ export const TableBox = memo(function TableBox({ data, width, height }: NodeProp
       {showRows && (
         // A capped table scrolls here, so the wheel has to reach it instead of the canvas.
         <div className={capped ? "nodrag nowheel overflow-y-auto" : ""} style={capped ? { height: MAX_ROWS * row } : undefined}>
-          {table.columns.map((column) => {
+          {table.columns.map((column, index) => {
             const suffix = rowSuffix(column, options);
             return (
               <div
-                key={column.name}
+                key={index}
                 className={`flex items-center gap-1 px-2 whitespace-nowrap ${highlighted.includes(`\u0000${column.name}\u0000`) ? "bg-primary/20" : ""}`}
                 style={{ height: row }}
                 title={`${column.name}: ${column.dataType}${suffix}`}

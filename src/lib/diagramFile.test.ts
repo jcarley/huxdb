@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { foreignKeyKey, tableKey } from "./diagramDrift";
+import { dependencyKey, foreignKeyKey, tableKey } from "./diagramDrift";
 import { captureLayout, layoutSignature, restoreLayout } from "./diagramFile";
 import { toEdges, toNodes } from "./diagramFlow";
 import { DEFAULT_OPTIONS } from "./diagramLayout";
@@ -45,7 +45,7 @@ describe("options in the file", () => {
 describe("captureLayout", () => {
   it("saves positions by name, and routes by constraint", () => {
     const s: DiagramStructure = { tables: [table(1), table(2)], foreignKeys: [fk(5, 1, 2)] };
-    const layout: Layout = { positions: new Map([[1, { x: 7, y: 8 }], [2, { x: 300, y: 0 }]]), routes: new Map([[5, [{ x: 50, y: 50 }]]]), hubEdges: new Set() };
+    const layout: Layout = { positions: new Map([[1, { x: 7, y: 8 }], [2, { x: 300, y: 0 }]]), routes: new Map([["5", [{ x: 50, y: 50 }]]]), hubEdges: new Set() };
     const { nodes, edges } = onScreen(s, layout);
     const file = captureLayout(s, nodes, edges, null, { x: 1, y: 2, zoom: 0.5 });
     expect(file.tables[keyOf(table(1))]).toEqual({ x: 7, y: 8 });
@@ -72,7 +72,7 @@ describe("restoreLayout", () => {
     const recreated: DiagramStructure = { tables: [{ ...table(1), oid: 91 }, { ...table(2), oid: 92 }], foreignKeys: [{ ...fk(5, 1, 2), oid: 95, childOid: 91, parentOid: 92 }] };
     const layout = restoreLayout(routed(), recreated, boxesOf(recreated), new Set());
     expect(layout.positions.get(91)).toEqual({ x: 10, y: 20 });
-    expect(layout.routes.get(95)).toEqual([{ x: 200, y: 40 }]);
+    expect(layout.routes.get("95")).toEqual([{ x: 200, y: 40 }]);
   });
 
   it("drops a route to a table whose rows moved", () => {
@@ -84,8 +84,8 @@ describe("restoreLayout", () => {
     const layout = restoreLayout(routed(), more, boxesOf(more), new Set());
     expect(layout.positions.get(1)).toEqual({ x: 10, y: 20 });
     expect(layout.positions.get(3)!.y).toBeGreaterThan(20 + 50);
-    expect(layout.routes.has(5)).toBe(true);
-    expect(layout.routes.has(6)).toBe(false);
+    expect(layout.routes.has("5")).toBe(true);
+    expect(layout.routes.has("6")).toBe(false);
   });
 
   it("copes with every table being new", () => {
@@ -98,5 +98,30 @@ describe("restoreLayout", () => {
     const foreignKeys = Array.from({ length: 10 }, (_, i) => fk(100 + i, i + 2, 1));
     const hubby = { tables, foreignKeys };
     expect(restoreLayout(empty, hubby, boxesOf(hubby), new Set()).hubEdges.size).toBe(10);
+  });
+});
+
+describe("dependencies in the file", () => {
+  const s: DiagramStructure = { tables: [table(1), table(2)], foreignKeys: [], dependencies: [{ dependentOid: 1, sourceOid: 2 }] };
+  const names = new Map(s.tables.map((t) => [t.oid, t]));
+
+  it("saves a dependency's route under its key and restores it", () => {
+    const layout: Layout = { positions: new Map([[1, { x: 0, y: 0 }], [2, { x: 300, y: 0 }]]), routes: new Map([["dep:1:2", [{ x: 150, y: 9 }]]]), hubEdges: new Set() };
+    const { nodes, edges } = onScreen(s, layout);
+    const file = captureLayout(s, nodes, edges, null, null);
+    expect(file.routes[dependencyKey(s.dependencies![0], names)!]).toEqual([{ x: 150, y: 9 }]);
+    const again = restoreLayout(file, { ...s, tables: [{ ...table(1), oid: 71 }, { ...table(2), oid: 72 }], dependencies: [{ dependentOid: 71, sourceOid: 72 }] }, boxesOf({ tables: [{ ...table(71) }, { ...table(72) }], foreignKeys: [] }), new Set());
+    expect(again.routes.get("dep:71:72")).toEqual([{ x: 150, y: 9 }]);
+  });
+
+  it("keeps the place of a table replaced by a view", () => {
+    const file: DiagramLayoutFile = { ...empty, tables: { [keyOf(table(1))]: { x: 40, y: 50 } } };
+    const view: DiagramStructure = { tables: [{ ...table(9), name: "t1", kind: "view" }], foreignKeys: [] };
+    expect(restoreLayout(file, view, boxesOf(view), new Set()).positions.get(9)).toEqual({ x: 40, y: 50 });
+  });
+
+  it("restores a file from before this phase, with no dependencies", () => {
+    const old: DiagramStructure = { tables: [table(1), table(2)], foreignKeys: [] };
+    expect(restoreLayout(empty, old, boxesOf(old), new Set()).routes.size).toBe(0);
   });
 });

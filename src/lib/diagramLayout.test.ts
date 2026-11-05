@@ -1,6 +1,6 @@
 import type { ElkExtendedEdge, ElkNode } from "elkjs/lib/elk-api";
 import { describe, expect, it } from "vitest";
-import { bounds, clusterGraph, columnOffset, DEFAULT_OPTIONS, defaultOptions, elkOptions, headerHeight, hubLimit, keysWithin, layoutDiagram, layoutGaps, MAX_ROWS, partition, placedAt, rowHeight, rowsTop, rowSuffix, shelves, tableBox } from "./diagramLayout";
+import { bounds, clusterGraph, columnOffset, DEFAULT_OPTIONS, defaultOptions, dependencyId, distanceChoices, elkOptions, HEADER as HEADER_COLUMN, headerHeight, hubLimit, keysWithin, layoutDiagram, layoutEdges, layoutGaps, MAX_ROWS, partition, placedAt, rowHeight, rowsTop, rowSuffix, shelves, tableBox } from "./diagramLayout";
 import type { RunLayout, Box } from "./diagramLayout";
 import type { DiagramForeignKey, DiagramTable } from "./types";
 
@@ -32,6 +32,7 @@ const fk = (childOid: number, parentOid: number, child = "c1", parent = "c0"): D
   validated: true,
   enforced: true,
 });
+const edges = (...keys: DiagramForeignKey[]) => layoutEdges({ tables: [], foreignKeys: keys });
 const sizes = (tables: DiagramTable[]) => new Map<number, Box>(tables.map((t) => [t.oid, { width: 100, height: 80 }]));
 const measure = (text: string) => text.length * 6;
 
@@ -49,6 +50,10 @@ describe("tableBox", () => {
     const t = table(1);
     expect(tableBox(t, measure).width).toBe(measure("c0: integer") + 44);
     expect(tableBox(t, measure).height).toBe(HEADER + 3 * ROW + 2);
+  });
+
+  it("leaves room for a materialized view's thicker border", () => {
+    expect(tableBox({ ...table(1), kind: "materialized-view" }, measure).height).toBe(HEADER + 3 * ROW + 4);
   });
 
   it("stops growing at the row cap", () => {
@@ -152,7 +157,7 @@ describe("partition", () => {
   it("sets hubs aside, and clusters what remains", () => {
     const tables = [1, ...Array.from({ length: 12 }, (_, i) => i + 2)].map((oid) => table(oid));
     const fks = [...Array.from({ length: 10 }, (_, i) => fk(i + 2, 1)), fk(2, 3), fk(3, 4), fk(5, 6)];
-    const p = partition(tables, fks);
+    const p = partition(tables, edges(...fks));
     expect(p.hubs.map((t) => t.oid)).toEqual([1]);
     expect(p.clusters.map((c) => c.map((t) => t.oid).sort((a, b) => a - b))).toEqual([[2, 3, 4], [5, 6]]);
     expect(p.inner).toHaveLength(3);
@@ -163,12 +168,12 @@ describe("partition", () => {
 
   it("doesn't count a self-reference towards being a hub", () => {
     const fks = Array.from({ length: 12 }, () => fk(1, 1));
-    expect(partition([table(1)], fks).hubs).toEqual([]);
+    expect(partition([table(1)], edges(...fks)).hubs).toEqual([]);
   });
 
   it("keeps a small diagram in one cluster", () => {
     const tables = [table(1), table(2), table(3)];
-    const p = partition(tables, [fk(2, 1), fk(3, 1)]);
+    const p = partition(tables, edges(fk(2, 1), fk(3, 1)));
     expect(p.hubs).toEqual([]);
     expect(p.clusters).toHaveLength(1);
     expect(p.loners).toEqual([]);
@@ -179,6 +184,15 @@ it("starts a crowded diagram with its relationship names off", () => {
   const tables = [table(1), table(2)];
   expect(defaultOptions({ tables, foreignKeys: Array.from({ length: 60 }, () => fk(1, 2)) }).showRelationshipNames).toBe(true);
   expect(defaultOptions({ tables, foreignKeys: Array.from({ length: 61 }, () => fk(1, 2)) }).showRelationshipNames).toBe(false);
+});
+
+describe("distanceChoices", () => {
+  it("offers the usual distances in order", () => {
+    expect(distanceChoices(40)).toEqual([20, 30, 40, 60, 80, 120]);
+  });
+  it("keeps a saved distance that isn't one of them", () => {
+    expect(distanceChoices(50)).toEqual([20, 30, 40, 50, 60, 80, 120]);
+  });
 });
 
 describe("elkOptions", () => {
@@ -221,16 +235,16 @@ describe("placing a layout", () => {
   });
 
   it("moves positions and routes by the same amount", () => {
-    const layout = { positions: new Map([[1, { x: 10, y: 20 }]]), routes: new Map([[5, [{ x: 15, y: 25 }]]]), hubEdges: new Set<number>() };
+    const layout = { positions: new Map([[1, { x: 10, y: 20 }]]), routes: new Map([["5", [{ x: 15, y: 25 }]]]), hubEdges: new Set<string>() };
     const placed = placedAt(layout, boxes, { x: 100, y: 100 });
     expect(placed.positions.get(1)).toEqual({ x: 100, y: 100 });
-    expect(placed.routes.get(5)).toEqual([{ x: 105, y: 105 }]);
+    expect(placed.routes.get("5")).toEqual([{ x: 105, y: 105 }]);
   });
 });
 
 it("keeps only keys with both ends among the tables", () => {
   const inside = fk(1, 2);
-  expect(keysWithin([table(1), table(2)], [inside, fk(1, 3), fk(3, 1)])).toEqual([inside]);
+  expect(keysWithin([table(1), table(2)], edges(inside, fk(1, 3), fk(3, 1)))).toEqual(edges(inside));
 });
 
 describe("Group by Schema", () => {
@@ -246,15 +260,15 @@ describe("Group by Schema", () => {
       graphs.push(graph.children!.map((c) => c.id));
       return run(graph);
     };
-    const { positions, routes } = await layoutDiagram(tables, fks, sizes(tables), spy, grouped);
+    const { positions, routes } = await layoutDiagram(tables, edges(...fks), sizes(tables), spy, grouped);
     expect(graphs).toEqual([["1", "2"], ["3", "4"]]);
     expect(positions.size).toBe(4);
-    expect(routes.has(fks[0].oid) && routes.has(fks[1].oid)).toBe(true);
-    expect(routes.has(fks[2].oid)).toBe(false);
+    expect(routes.has(String(fks[0].oid)) && routes.has(String(fks[1].oid))).toBe(true);
+    expect(routes.has(String(fks[2].oid))).toBe(false);
   });
 
   it("keeps schemas apart by twice the block gap", async () => {
-    const { positions } = await layoutDiagram(tables, fks, sizes(tables), run, grouped);
+    const { positions } = await layoutDiagram(tables, edges(...fks), sizes(tables), run, grouped);
     const box = (oids: number[]) => bounds(oids.map((oid) => [oid, positions.get(oid)!]), sizes(tables));
     const [a, b] = [box([1, 2]), box([3, 4])];
     const apart = Math.max(b.x - (a.x + a.width), a.x - (b.x + b.width), b.y - (a.y + a.height), a.y - (b.y + b.height));
@@ -264,8 +278,8 @@ describe("Group by Schema", () => {
   it("takes hubs from the whole diagram, as a reopened file does", async () => {
     const many = [inSchema(1, "a"), ...Array.from({ length: 12 }, (_, i) => inSchema(i + 2, "b"))];
     const keys = many.slice(1).map((t) => fk(t.oid, 1));
-    const { hubEdges, routes } = await layoutDiagram(many, keys, sizes(many), run, grouped);
-    expect(hubEdges).toEqual(partition(many, keys).hubEdges);
+    const { hubEdges, routes } = await layoutDiagram(many, edges(...keys), sizes(many), run, grouped);
+    expect(hubEdges).toEqual(partition(many, edges(...keys)).hubEdges);
     for (const id of hubEdges) expect(routes.has(id)).toBe(false);
   });
 });
@@ -273,7 +287,7 @@ describe("Group by Schema", () => {
 describe("clusterGraph", () => {
   it("leaves self-references out, as they draw their own loop", () => {
     const [a, b] = [table(1), table(2)];
-    const graph = clusterGraph([a, b], [fk(1, 1), fk(1, 2)], sizes([a, b]));
+    const graph = clusterGraph([a, b], edges(fk(1, 1), fk(1, 2)), sizes([a, b]));
     expect(graph.edges).toHaveLength(1);
     expect(graph.children![0].ports).toHaveLength(1);
   });
@@ -281,7 +295,7 @@ describe("clusterGraph", () => {
   it("fixes each port to its column, and leaves out keys that leave the cluster", () => {
     const a = table(1);
     const b = table(2);
-    const graph = clusterGraph([a, b], [fk(1, 2, "c2", "c0"), fk(1, 99)], sizes([a, b]));
+    const graph = clusterGraph([a, b], edges(fk(1, 2, "c2", "c0"), fk(1, 99)), sizes([a, b]));
     expect(graph.edges).toHaveLength(1);
     const [child, parent] = graph.children!;
     expect(child.layoutOptions?.["elk.portConstraints"]).toBe("FIXED_POS");
@@ -292,7 +306,7 @@ describe("clusterGraph", () => {
   it("shares a port between two keys on one column", () => {
     const a = table(1);
     const b = table(2);
-    const graph = clusterGraph([a, b], [fk(1, 2), fk(1, 2)], sizes([a, b]));
+    const graph = clusterGraph([a, b], edges(fk(1, 2), fk(1, 2)), sizes([a, b]));
     expect(graph.edges).toHaveLength(2);
     expect(graph.children![0].ports).toHaveLength(1);
   });
@@ -302,13 +316,13 @@ describe("layoutDiagram", () => {
   it("places every table, without overlap between blocks, and offsets routes with their block", async () => {
     const tables = Array.from({ length: 16 }, (_, i) => table(i + 1));
     const fks = [...Array.from({ length: 10 }, (_, i) => fk(i + 2, 1)), fk(2, 3), fk(14, 15)];
-    const { positions, routes, hubEdges } = await layoutDiagram(tables, fks, sizes(tables), fakeElk);
+    const { positions, routes, hubEdges } = await layoutDiagram(tables, edges(...fks), sizes(tables), fakeElk);
     expect(positions.size).toBe(16);
     expect(hubEdges.size).toBe(10);
     expect(routes.size).toBe(2);
     const seen = new Set([...positions.values()].map((p) => `${p.x},${p.y}`));
     expect(seen.size).toBe(16);
-    const routed = routes.get(fks[10].oid)![0];
+    const routed = routes.get(String(fks[10].oid))![0];
     const block = positions.get(2)!.x === 0 ? positions.get(2)! : positions.get(3)!;
     expect(routed.x - block.x).toBe(50);
   });
@@ -318,5 +332,59 @@ describe("layoutDiagram", () => {
     const never = () => Promise.reject(new Error("ELK ran"));
     const { positions } = await layoutDiagram(tables, [], sizes(tables), never);
     expect(positions.size).toBe(2);
+  });
+});
+
+describe("views and functions", () => {
+  const view = (oid: number): DiagramTable => ({ ...table(oid), kind: "view" });
+  const reads = (dependentOid: number, sourceOid: number) => ({ dependentOid, sourceOid });
+
+  it("keeps a view near what it reads", () => {
+    const tables = [table(1), view(2)];
+    const lines = layoutEdges({ tables, foreignKeys: [], dependencies: [reads(2, 1)] });
+    expect(lines).toEqual([{ id: dependencyId(reads(2, 1)), childOid: 2, parentOid: 1, childColumn: HEADER_COLUMN, parentColumn: HEADER_COLUMN }]);
+    const p = partition(tables, lines);
+    expect(p.clusters.map((c) => c.map((t) => t.oid).sort())).toEqual([[1, 2]]);
+    expect(p.loners).toEqual([]);
+  });
+
+  it("meets a table at its header", () => {
+    expect(columnOffset(table(1), HEADER_COLUMN)).toBe(HEADER / 2);
+  });
+
+  it("gives all of a table's dependency lines on one side a port at its header", () => {
+    const [a, b, c] = [view(1), table(2), table(3)];
+    const lines = layoutEdges({ tables: [a, b, c], foreignKeys: [], dependencies: [reads(1, 2), reads(1, 3)] });
+    const graph = clusterGraph([a, b, c], lines, sizes([a, b, c]));
+    expect(graph.edges).toHaveLength(2);
+    expect(graph.children![0].ports).toEqual([expect.objectContaining({ id: "1:EAST:", y: HEADER / 2 })]);
+  });
+
+  it("widens a view's header for its icon, and a table's not", () => {
+    const t = { ...table(1), columns: [] };
+    expect(tableBox({ ...t, kind: "view" }, measure).width - tableBox(t, measure).width).toBe(Math.ceil(DEFAULT_OPTIONS.fontSize * 1.5)); // the box width is rounded up
+    expect(tableBox({ ...t, kind: "table" }, measure).width).toBe(tableBox(t, measure).width);
+  });
+
+  it("leaves a function's header room for its info icon too, at every font size", () => {
+    const t = { ...table(1), columns: [] };
+    for (const fontSize of [9, 10, 11, 12, 13, 14, 16]) {
+      const options = { ...DEFAULT_OPTIONS, fontSize };
+      const base = tableBox(t, measure, options).width;
+      for (const kind of ["function", "procedure"] as const) expect(tableBox({ ...t, kind }, measure, options).width - base).toBe(Math.ceil(fontSize * 3));
+    }
+  });
+
+  it("packs a function with no lines as an isolated node", async () => {
+    const fn: DiagramTable = { ...table(-1, 0), kind: "function" };
+    const tables = [table(1), table(2), fn];
+    const lines = layoutEdges({ tables, foreignKeys: [fk(2, 1)] });
+    expect(partition(tables, lines).loners.flat().map((t) => t.oid)).toEqual([-1]);
+    const { positions } = await layoutDiagram(tables, lines, sizes(tables), fakeElk);
+    expect(positions.has(-1)).toBe(true);
+  });
+
+  it("reads a structure with no dependencies, as older files have", () => {
+    expect(layoutEdges({ tables: [], foreignKeys: [] })).toEqual([]);
   });
 });

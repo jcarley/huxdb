@@ -1,8 +1,8 @@
 // Between a diagram on screen and its saved layout. Pure.
 
-import { foreignKeyKey, tableKey } from "./diagramDrift";
-import type { FkEdge, TableNode } from "./diagramFlow";
-import { partition, shelves } from "./diagramLayout";
+import { dependencyKey, foreignKeyKey, tableKey } from "./diagramDrift";
+import type { DiagramEdge, TableNode } from "./diagramFlow";
+import { dependencyId, layoutEdges, partition, shelves } from "./diagramLayout";
 import type { Box, Layout, Point } from "./diagramLayout";
 import type { DiagramLayoutFile, DiagramOptions, DiagramStructure, DiagramViewport } from "./types";
 
@@ -19,7 +19,7 @@ export const layoutSignature = (nodes: TableNode[], options?: DiagramOptions) =>
  * The layout to save. Positions in `previous` stay, so a table that's gone from the database
  * keeps its place until the report is accepted, in case it comes back.
  */
-export function captureLayout(structure: DiagramStructure, nodes: TableNode[], edges: FkEdge[], previous: DiagramLayoutFile | null, viewport: DiagramViewport | null, options?: DiagramOptions): DiagramLayoutFile {
+export function captureLayout(structure: DiagramStructure, nodes: TableNode[], edges: DiagramEdge[], previous: DiagramLayoutFile | null, viewport: DiagramViewport | null, options?: DiagramOptions): DiagramLayoutFile {
   const tables = new Map(structure.tables.map((t) => [t.oid, t]));
   const positions = { ...previous?.tables };
   for (const node of nodes) {
@@ -32,6 +32,11 @@ export function captureLayout(structure: DiagramStructure, nodes: TableNode[], e
     const route = points.get(String(fk.oid));
     const child = tables.get(fk.childOid);
     if (route && child) routes[foreignKeyKey(fk, child)] = route;
+  }
+  for (const d of structure.dependencies ?? []) {
+    const route = points.get(dependencyId(d));
+    const key = route && dependencyKey(d, tables);
+    if (route && key) routes[key] = route;
   }
   return { tables: positions, routes, viewport, options };
 }
@@ -60,17 +65,26 @@ export function restoreLayout(file: DiagramLayoutFile, structure: DiagramStructu
   const top = positions.size ? bottom + NEW_TABLE_GAP * 2 : 0;
   unplaced.forEach((u, i) => positions.set(u.oid, { x: (positions.size > i ? left : 0) + corners[i].x, y: top + corners[i].y }));
 
-  const { hubEdges } = partition(structure.tables, structure.foreignKeys);
+  const { hubEdges } = partition(structure.tables, layoutEdges(structure));
   const tables = new Map(structure.tables.map((t) => [t.oid, t]));
   const fresh = new Set(unplaced.map((u) => u.oid));
   const routes: Layout["routes"] = new Map();
   for (const fk of structure.foreignKeys) {
     const child = tables.get(fk.childOid);
     const parent = tables.get(fk.parentOid);
-    if (!child || !parent || hubEdges.has(fk.oid)) continue;
+    if (!child || !parent || hubEdges.has(String(fk.oid))) continue;
     if (fresh.has(fk.childOid) || fresh.has(fk.parentOid) || changed.has(tableKey(child)) || changed.has(tableKey(parent))) continue;
     const route = file.routes[foreignKeyKey(fk, child)];
-    if (route) routes.set(fk.oid, route);
+    if (route) routes.set(String(fk.oid), route);
+  }
+  for (const d of structure.dependencies ?? []) {
+    const key = dependencyKey(d, tables);
+    if (!key || hubEdges.has(dependencyId(d))) continue;
+    const child = tables.get(d.dependentOid)!;
+    const parent = tables.get(d.sourceOid)!;
+    if (fresh.has(d.dependentOid) || fresh.has(d.sourceOid) || changed.has(tableKey(child)) || changed.has(tableKey(parent))) continue;
+    const route = file.routes[key];
+    if (route) routes.set(dependencyId(d), route);
   }
   return { positions, routes, hubEdges };
 }

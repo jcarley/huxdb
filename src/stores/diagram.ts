@@ -1,16 +1,16 @@
 import { create } from "zustand";
-import { compareStructure, reportCount, resolveOids, tableKey } from "../lib/diagramDrift";
+import { compareStructure, objectKind, reportCount, resolveOids, tableKey } from "../lib/diagramDrift";
 import type { DriftReport } from "../lib/diagramDrift";
 import { captureLayout, layoutSignature, restoreLayout } from "../lib/diagramFile";
 import { applyArrangement, currentArrangement, dropRoutes, reshapeNodes, revealHubLines, selectionArrangement, toEdges, toNodes } from "../lib/diagramFlow";
-import type { Arrangement, FkEdge, TableNode } from "../lib/diagramFlow";
-import { defaultOptions, keysWithin, layoutDiagram, tableBox } from "../lib/diagramLayout";
+import type { Arrangement, DiagramEdge, TableNode } from "../lib/diagramFlow";
+import { defaultOptions, keysWithin, layoutDiagram, layoutEdges, tableBox } from "../lib/diagramLayout";
 import type { Box, Layout } from "../lib/diagramLayout";
 import { fontsReady, measureText, runElk, startLayout } from "../lib/diagramBrowser";
 import type { LayoutJob } from "../lib/diagramBrowser";
 import * as api from "../lib/api";
 import { errorMessage } from "../lib/api";
-import type { DiagramContent, DiagramForeignKey, DiagramLayoutFile, DiagramOptions, DiagramStructure, DiagramViewport, SavedDiagram } from "../lib/types";
+import type { ViewColumnSource, DiagramContent, DiagramForeignKey, DiagramLayoutFile, DiagramOptions, DiagramStructure, DiagramViewport, SavedDiagram } from "../lib/types";
 
 /** Where a new diagram's picker was opened from. `schema` only decides what starts ticked. */
 export interface DiagramTarget {
@@ -31,6 +31,9 @@ export interface DiagramSelection {
   foreignKey: DiagramForeignKey | null;
 }
 
+/** A view's column sources: loading, read, or failed. */
+export type ViewTrace = { status: "loading" } | { status: "ready"; columns: ViewColumnSource[] } | { status: "error"; error: string };
+
 const NOTHING_SELECTED: DiagramSelection = { nodes: [], edge: null, foreignKey: null };
 
 export interface DiagramEditor {
@@ -41,7 +44,7 @@ export interface DiagramEditor {
   status: "loading" | "ready" | "error";
   error: string | null;
   nodes: TableNode[];
-  edges: FkEdge[];
+  edges: DiagramEdge[];
   /** Today's structure, from the database. */
   structure: DiagramStructure | null;
   /** The structure as last accepted, which drift is compared against. */
@@ -52,6 +55,8 @@ export interface DiagramEditor {
   viewport: DiagramViewport | null;
   options: DiagramOptions | null;
   selection: DiagramSelection;
+  /** Each selected view's column sources by oid. Cleared whenever the tables are drawn again. */
+  traces: Record<number, ViewTrace>;
   /** The foreign key under the pointer, whose fields are highlighted. */
   hover: DiagramForeignKey | null;
   /** What changed since `snapshot`; null when nothing did. */
@@ -103,11 +108,13 @@ interface DiagramsState {
   load: (id: string) => Promise<void>;
   /** React Flow's next nodes. `moved` are tables being dragged, and `settled` means a drag just ended. */
   setNodes: (id: string, nodes: TableNode[], moved: Set<string>, settled: boolean) => void;
-  setEdges: (id: string, edges: FkEdge[]) => void;
+  setEdges: (id: string, edges: DiagramEdge[]) => void;
   /** Follows React Flow's selection. */
   select: (id: string, selection: Omit<DiagramSelection, "foreignKey">) => void;
   /** Selects one table from outside the canvas. */
   selectNode: (id: string, node: string) => void;
+  /** Reads where a view's columns come from. A running or finished trace is kept, and a failed one runs again. */
+  traceView: (id: string, oid: number) => Promise<void>;
   setHover: (id: string, foreignKey: DiagramForeignKey | null) => void;
   /** Changes how tables are drawn. They grow in place, and the banner offers a new layout. */
   setOptions: (id: string, change: Partial<DiagramOptions>) => Promise<void>;
@@ -146,6 +153,7 @@ const drawn = (structure: DiagramStructure, layout: Layout, boxes: Map<number, B
   nodes: toNodes(structure, layout, boxes, options),
   edges: toEdges(structure, layout),
   selection: NOTHING_SELECTED,
+  traces: {},
   hover: null,
   undo: [],
 });
@@ -164,6 +172,11 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
       const diagram = s.diagrams[id];
       return diagram ? { diagrams: { ...s.diagrams, [id]: { ...diagram, ...change(diagram) } } } : s;
     });
+  /** A selected view shows where its columns come from. */
+  const traceIfView = (id: string, node: string) => {
+    const table = get().diagrams[id]?.structure?.tables.find((t) => String(t.oid) === node);
+    if (table && (objectKind(table) === "view" || objectKind(table) === "materialized-view")) void get().traceView(id, table.oid);
+  };
   /** Each load gets a number, so a retry or a closed tab can't be overwritten by a late answer. */
   const latest = new Map<string, number>();
   /** The running layout per tab. Replacing or removing one is what makes its late result drop. */
@@ -193,6 +206,7 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
     viewport: null,
     options: null,
     selection: NOTHING_SELECTED,
+    traces: {},
     hover: null,
     report: null,
     offerLayout: false,
@@ -213,7 +227,7 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
     const [candidates, structure] = await Promise.all([api.diagramCandidates(d.connectionId, d.database), api.diagramStructure(d.connectionId, d.database, d.oids)]);
     const options = defaultOptions(structure);
     const boxes = await measure(structure, options);
-    const layout = await layoutDiagram(structure.tables, structure.foreignKeys, boxes, runElk, options);
+    const layout = await layoutDiagram(structure.tables, layoutEdges(structure), boxes, runElk, options);
     if (latest.get(id) !== request) return;
     update(id, () => ({ status: "ready", structure, snapshot: structure, known: candidateKeys(candidates), options, outOfDate: false, ...drawn(structure, layout, boxes, options) }));
   }
@@ -319,9 +333,10 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
       const same = diagram.selection.edge === selection.edge && diagram.selection.nodes.length === selection.nodes.length && selection.nodes.every((n, i) => n === diagram.selection.nodes[i]);
       const foreignKey = selection.edge ? (diagram.structure?.foreignKeys.find((fk) => String(fk.oid) === selection.edge) ?? null) : null;
       if (edges !== diagram.edges || !same) update(id, () => ({ edges, selection: { ...selection, foreignKey } }));
+      if (selection.nodes.length === 1) traceIfView(id, selection.nodes[0]);
     },
 
-    selectNode: (id, node) =>
+    selectNode: (id, node) => {
       update(id, (d) => ({
         nodes: d.nodes.map((n) => {
           const selected = n.id === node;
@@ -329,7 +344,23 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
         }),
         edges: revealHubLines(d.edges.map((e) => (e.selected ? { ...e, selected: false } : e)), new Set([node])),
         selection: { nodes: [node], edge: null, foreignKey: null },
-      })),
+      }));
+      traceIfView(id, node);
+    },
+
+    traceView: async (id, oid) => {
+      const diagram = get().diagrams[id];
+      if (!diagram || (diagram.traces[oid] && diagram.traces[oid].status !== "error")) return;
+      // Identity, not a counter: drawing again replaces `traces`, which drops this answer.
+      const pending: ViewTrace = { status: "loading" };
+      update(id, (d) => ({ traces: { ...d.traces, [oid]: pending } }));
+      const settle = (trace: ViewTrace) => update(id, (d) => (d.traces[oid] === pending ? { traces: { ...d.traces, [oid]: trace } } : {}));
+      try {
+        settle({ status: "ready", columns: await api.diagramViewSources(diagram.connectionId, diagram.database, oid) });
+      } catch (e) {
+        settle({ status: "error", error: errorMessage(e) });
+      }
+    },
 
     setHover: (id, hover) => update(id, () => ({ hover })),
 
@@ -360,10 +391,10 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
       update(id, (d) => {
         if (!d.structure || !d.snapshot) return {};
         const gone = new Set(nodes);
-        const keep = <T extends { tables: { oid: number }[]; foreignKeys: { childOid: number; parentOid: number }[] }>(s: T, stays: (t: T["tables"][number]) => boolean) => {
+        const keep = <T extends { tables: { oid: number }[]; foreignKeys: { childOid: number; parentOid: number }[]; dependencies?: { dependentOid: number; sourceOid: number }[] }>(s: T, stays: (t: T["tables"][number]) => boolean) => {
           const tables = s.tables.filter(stays);
           const oids = new Set(tables.map((t) => t.oid));
-          return { ...s, tables, foreignKeys: s.foreignKeys.filter((fk) => oids.has(fk.childOid) && oids.has(fk.parentOid)) };
+          return { ...s, tables, foreignKeys: s.foreignKeys.filter((fk) => oids.has(fk.childOid) && oids.has(fk.parentOid)), ...(s.dependencies && { dependencies: s.dependencies.filter((d) => oids.has(d.dependentOid) && oids.has(d.sourceOid)) }) };
         };
         const removed = d.structure.tables.filter((t) => gone.has(String(t.oid)));
         const keys = new Set(removed.map(tableKey));
@@ -428,7 +459,7 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
       const tables = chosen.size ? structure.tables.filter((t) => chosen.has(String(t.oid))) : structure.tables;
       try {
         const boxes = await measure(structure, options);
-        const layout = await layoutDiagram(tables, keysWithin(tables, structure.foreignKeys), boxes, job.run, options);
+        const layout = await layoutDiagram(tables, keysWithin(tables, layoutEdges(structure)), boxes, job.run, options);
         if (layouts.get(id) !== job) return;
         update(id, (d) => {
           const undo = [...d.undo, { ...currentArrangement(d.nodes, d.edges), offerLayout: d.offerLayout }].slice(-UNDO_LIMIT);

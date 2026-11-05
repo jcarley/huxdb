@@ -23,7 +23,7 @@ use crate::fsutil::{copy_name, modified_ms, path_part, write_atomic};
 use crate::saved_queries::CHANGED_MARKER;
 
 /// Raise this when `content` changes in a way older code can't read.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 const MAX_NAME_CHARS: usize = 200;
 
 /// What the list shows about a diagram.

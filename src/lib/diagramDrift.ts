@@ -4,15 +4,30 @@
 // can match something unrelated after a restore. So an OID is only ever a hint, offered as a
 // possible rename for the user to confirm.
 
-import type { DiagramCandidate, DiagramForeignKey, DiagramStructure, DiagramTable } from "./types";
+import type { DiagramCandidate, DiagramDependency, DiagramObjectKind, DiagramForeignKey, DiagramStructure, DiagramTable } from "./types";
 
-type Named = { schema: string; name: string };
+type Named = { schema: string; name: string; signature?: string | null };
 
-/** Exact and case-sensitive. JSON, because a dot can appear in a name. */
-export const tableKey = ({ schema, name }: Named) => JSON.stringify([schema, name]);
+/**
+ * Exact and case-sensitive. JSON, because a dot can appear in a name. A signature tells
+ * overloads apart, and "" (no arguments) from none (a relation).
+ */
+export const tableKey = ({ schema, name, signature }: Named) => JSON.stringify(signature == null ? [schema, name] : [schema, name, signature]);
+
+export const objectKind = (t: { kind?: DiagramObjectKind }): DiagramObjectKind => t.kind ?? "table";
+
+/** What the user reads: `add(a integer)` for a function or procedure, the name otherwise. */
+export const objectLabel = ({ name, signature }: Named) => (signature == null ? name : `${name}(${signature})`);
 
 /** A constraint's name is unique per table only, so its table is part of its key. */
 export const foreignKeyKey = (fk: DiagramForeignKey, child: Named) => JSON.stringify([child.schema, child.name, fk.name]);
+
+/** A dependency's line, by both objects' names, so a route survives a restore. Undefined if either end isn't on the diagram. */
+export function dependencyKey(d: DiagramDependency, tables: Map<number, Named>) {
+  const view = tables.get(d.dependentOid);
+  const source = tables.get(d.sourceOid);
+  return view && source ? JSON.stringify(["dep", tableKey(view), tableKey(source)]) : undefined;
+}
 
 export interface RemovedTable extends Named {
   key: string;
@@ -44,15 +59,18 @@ export function resolveOids(snapshot: DiagramStructure, candidates: DiagramCandi
 
 function columnChanges(before: DiagramTable, after: DiagramTable) {
   const changes: string[] = [];
+  const was = objectKind(before);
+  const is = objectKind(after);
+  if (was !== is) changes.push(is === "view" ? "Now a view" : is === "materialized-view" ? "Now a materialized view" : "Now a table");
   const old = new Map(before.columns.map((c) => [c.name, c]));
   const now = new Map(after.columns.map((c) => [c.name, c]));
   for (const c of after.columns) if (!old.has(c.name)) changes.push(`Column ${c.name} added`);
   for (const c of before.columns) if (!now.has(c.name)) changes.push(`Column ${c.name} removed`);
   for (const c of after.columns) {
-    const was = old.get(c.name);
-    if (!was) continue;
-    if (was.dataType !== c.dataType) changes.push(`Column ${c.name}: ${was.dataType} → ${c.dataType}`);
-    if (was.notNull !== c.notNull) changes.push(`Column ${c.name}: ${c.notNull ? "now NOT NULL" : "no longer NOT NULL"}`);
+    const prev = old.get(c.name);
+    if (!prev) continue;
+    if (prev.dataType !== c.dataType) changes.push(`Column ${c.name}: ${prev.dataType} → ${c.dataType}`);
+    if (prev.notNull !== c.notNull) changes.push(`Column ${c.name}: ${c.notNull ? "now NOT NULL" : "no longer NOT NULL"}`);
   }
   const primaryKey = (t: DiagramTable) => t.columns.filter((c) => c.primaryKey).map((c) => c.name).join(", ");
   if (primaryKey(before) !== primaryKey(after)) changes.push(`Primary key: (${primaryKey(before)}) → (${primaryKey(after)})`);
@@ -99,16 +117,19 @@ export function compareStructure(saved: DiagramStructure, known: string[], curre
     const after = now.get(key);
     if (!after) {
       const hint = byOid.get(table.oid);
-      removed.push({ key, schema: table.schema, name: table.name, renamedTo: hint && tableKey(hint) !== key ? hint : null });
+      removed.push({ key, schema: table.schema, name: table.name, signature: table.signature, renamedTo: hint && tableKey(hint) !== key ? hint : null });
       continue;
     }
     const changes = columnChanges(table, after);
-    if (changes.length) modified.push({ key, schema: table.schema, name: table.name, changes });
+    if (changes.length) modified.push({ key, schema: table.schema, name: table.name, signature: table.signature, changes });
   }
 
   const renameTargets = new Set(removed.flatMap((r) => (r.renamedTo ? [tableKey(r.renamedTo)] : [])));
   const schemas = new Set(saved.tables.map((t) => t.schema));
+  // A diagram saved before views and functions has no kinds, and its `known` holds tables only.
+  const older = saved.tables.length > 0 && saved.tables.every((t) => t.kind === undefined);
   const added = candidates.filter((c) => {
+    if (older && c.kind !== "table") return false;
     const key = tableKey(c);
     return schemas.has(c.schema) && !knownKeys.has(key) && !now.has(key) && !renameTargets.has(key);
   });

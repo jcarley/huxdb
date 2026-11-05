@@ -5,7 +5,7 @@
 mod postgres;
 pub mod store;
 
-use postgres::{DiagramCandidate, DiagramStructure};
+use postgres::{DiagramCandidate, DiagramStructure, ViewColumnSource};
 use store::{DiagramContent, DiagramInfo, DiagramStore, DiagramSummary, SavedDiagram};
 use tauri::State;
 
@@ -49,6 +49,20 @@ pub async fn diagram_related(
 ) -> Result<Vec<i64>, String> {
     let pool = pool_for(&store, &sessions, &connection_id, Some(&database))?;
     postgres::related_tables(&pool, &oids).await
+}
+
+/// Which table columns a view's output columns come from, on demand because it prepares the
+/// view's query.
+#[tauri::command]
+pub async fn diagram_view_sources(
+    store: State<'_, ConnectionStore>,
+    sessions: State<'_, SessionManager>,
+    connection_id: String,
+    database: String,
+    oid: i64,
+) -> Result<Vec<ViewColumnSource>, String> {
+    let pool = pool_for(&store, &sessions, &connection_id, Some(&database))?;
+    postgres::view_sources(&pool, oid).await
 }
 
 #[tauri::command]

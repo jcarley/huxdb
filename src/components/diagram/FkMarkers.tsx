@@ -1,7 +1,7 @@
 import type { ChildEnd, ParentEnd } from "../../lib/diagramCardinality";
 
 export type Tone = "plain" | "hub" | "selected";
-type Mark = `child-${ChildEnd}` | `parent-${ParentEnd}`;
+type Mark = `child-${ChildEnd}` | `parent-${ParentEnd}` | "reads";
 
 const HEIGHT = 14;
 const MIDDLE = HEIGHT / 2;
@@ -18,6 +18,8 @@ const MARKS: Record<Mark, { width: number; ref: number; lines: string; ring?: nu
   "child-zero-or-one": { width: 15, ref: 0, lines: "M4 1V13", ring: 10.5 },
   "parent-one": { width: 14, ref: 14, lines: "M10 1V13M5 1V13" },
   "parent-zero-or-one": { width: 15, ref: 15, lines: "M11 1V13", ring: 4.5 },
+  // An open arrowhead at a dependency's end, which is the source's edge.
+  reads: { width: 12, ref: 11, lines: "M2 2L11 7L2 12" },
 };
 
 const TONES: Record<Tone, { stroke: string; strokeOpacity: number; strokeWidth: number }> = {

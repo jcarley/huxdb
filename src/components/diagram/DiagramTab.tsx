@@ -2,23 +2,24 @@ import "@fontsource/inter/400.css";
 import "@fontsource/inter/600.css";
 import { applyEdgeChanges, applyNodeChanges, Background, ReactFlow, ReactFlowProvider, useNodesInitialized, useReactFlow, useUpdateNodeInternals } from "@xyflow/react";
 import type { EdgeChange, EdgeMouseHandler, NodeChange, NodeMouseHandler, OnSelectionChangeParams, Viewport } from "@xyflow/react";
-import { ChevronDown, ListPlus, Network, RefreshCw, Save, SaveAll, Undo2 } from "lucide-react";
+import { ListPlus, Network, RefreshCw, Save, SaveAll, Undo2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { reportCount } from "../../lib/diagramDrift";
 import type { DriftReport } from "../../lib/diagramDrift";
-import type { FkEdge, TableNode } from "../../lib/diagramFlow";
-import type { DiagramLayoutQuality } from "../../lib/types";
+import type { DiagramEdge, TableNode } from "../../lib/diagramFlow";
 import { MAX_ZOOM, MIN_ZOOM, stepZoom } from "../../lib/diagramZoom";
 import { useDiagrams } from "../../stores/diagram";
 import { useSavedDiagrams } from "../../stores/savedDiagrams";
 import { useTabs } from "../../stores/tabs";
 import { ToolButton } from "../ToolButton";
 import { useContextMenu } from "../tree/ContextMenu";
+import { DependencyLine } from "./DependencyLine";
 import { DiagramId } from "./DiagramId";
 import { FkLine } from "./FkLine";
 import { FkMarkers } from "./FkMarkers";
-import { designTable, nodeMenu, openTablePicker } from "./nodeMenu";
+import { LayoutOptions } from "./LayoutOptions";
+import { designObject, nodeMenu, openTablePicker } from "./nodeMenu";
 import { ObjectPane } from "./ObjectPane";
 import { OverviewPane } from "./OverviewPane";
 import { Pane } from "./Pane";
@@ -27,19 +28,14 @@ import { TableBox } from "./TableBox";
 
 /** A layout quicker than this isn't worth a flash of progress. */
 const PROGRESS_AFTER_MS = 1000;
-const DISTANCES = [20, 30, 40, 60, 80, 120];
-const QUALITIES: { value: DiagramLayoutQuality; label: string }[] = [
-  { value: "draft", label: "Draft" },
-  { value: "normal", label: "Normal" },
-];
 
 const FIT = { minZoom: MIN_ZOOM, maxZoom: 1, padding: 0.03 };
 
 const nodeTypes = { table: TableBox };
-const edgeTypes = { fk: FkLine };
+const edgeTypes = { fk: FkLine, dependency: DependencyLine };
 
 /** Theme colours everything already reads, so nothing has to re-render to change them. */
-const BLACK_AND_WHITE = { "--color-primary": "#1f2937", "--color-primary-content": "#ffffff", "--color-warning": "#1f2937" } as CSSProperties;
+const BLACK_AND_WHITE = { "--color-primary": "#1f2937", "--color-primary-content": "#ffffff", "--color-secondary": "#1f2937", "--color-warning": "#1f2937" } as CSSProperties;
 
 function Canvas({ id }: { id: string }) {
   const nodes = useDiagrams((s) => s.diagrams[id]?.nodes);
@@ -83,7 +79,7 @@ function Canvas({ id }: { id: string }) {
     [id],
   );
   const onEdgesChange = useCallback(
-    (changes: EdgeChange<FkEdge>[]) => {
+    (changes: EdgeChange<DiagramEdge>[]) => {
       const { diagrams, setEdges } = useDiagrams.getState();
       setEdges(id, applyEdgeChanges(changes, diagrams[id].edges));
     },
@@ -94,9 +90,9 @@ function Canvas({ id }: { id: string }) {
     [id],
   );
   const onMoveEnd = useCallback((_: unknown, viewport: Viewport) => useDiagrams.getState().setViewport(id, viewport), [id]);
-  const onNodeDoubleClick = useCallback<NodeMouseHandler<TableNode>>((_, node) => designTable(id, node.id), [id]);
+  const onNodeDoubleClick = useCallback<NodeMouseHandler<TableNode>>((_, node) => designObject(id, node.id), [id]);
   const onNodeContextMenu = useCallback<NodeMouseHandler<TableNode>>((e, node) => openMenu(e, nodeMenu(id, node.id)), [id, openMenu]);
-  const onEdgeMouseEnter = useCallback<EdgeMouseHandler<FkEdge>>(
+  const onEdgeMouseEnter = useCallback<EdgeMouseHandler<DiagramEdge>>(
     (_, edge) => {
       const { diagrams, setHover } = useDiagrams.getState();
       setHover(id, diagrams[id]?.structure?.foreignKeys.find((fk) => String(fk.oid) === edge.id) ?? null);
@@ -169,46 +165,6 @@ function Banner({ id }: { id: string }) {
   );
 }
 
-/** What Auto Layout does next. Saved with the diagram. */
-function LayoutMenu({ id }: { id: string }) {
-  const options = useDiagrams((s) => s.diagrams[id]?.options);
-  const { setLayoutOptions } = useDiagrams.getState();
-  if (!options) return null;
-  return (
-    <div className="dropdown">
-      <button type="button" tabIndex={0} className="btn btn-ghost btn-xs px-0.5" aria-label="Auto Layout options" title="Auto Layout options">
-        <ChevronDown className="size-3" />
-      </button>
-      <div tabIndex={0} className="dropdown-content z-300 w-56 rounded-box border border-base-300 bg-base-100 p-3 text-sm shadow-lg">
-        <label className="mb-2 flex items-center justify-between gap-2">
-          Object distance
-          <select className="select select-xs w-20" value={options.objectDistance} onChange={(e) => setLayoutOptions(id, { objectDistance: Number(e.target.value) })}>
-            {[...new Set([...DISTANCES, options.objectDistance])].sort((a, b) => a - b).map((distance) => (
-              <option key={distance} value={distance}>
-                {distance}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="mb-2 flex items-center justify-between gap-2">
-          Quality
-          <select className="select select-xs w-20" value={options.layoutQuality} onChange={(e) => setLayoutOptions(id, { layoutQuality: e.target.value as DiagramLayoutQuality })}>
-            {QUALITIES.map(({ value, label }) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex items-center gap-2">
-          <input type="checkbox" className="checkbox checkbox-xs" checked={options.groupBySchema} onChange={(e) => setLayoutOptions(id, { groupBySchema: e.target.checked })} />
-          Group by schema
-        </label>
-      </div>
-    </div>
-  );
-}
-
 /** Stays quiet for a quick layout, and offers a way out of a slow one. */
 function LayoutProgress({ id }: { id: string }) {
   const running = useDiagrams((s) => s.diagrams[id]?.layingOut);
@@ -237,11 +193,12 @@ function LayoutButtons({ id }: { id: string }) {
   const selected = useDiagrams((s) => s.diagrams[id]?.selection.nodes);
   const canUndo = useDiagrams((s) => !!s.diagrams[id]?.undo.length);
   const count = selected?.length ?? 0;
-  const title = count === 1 ? "Select more tables, or none for the whole diagram" : count ? `Auto Layout the ${count} selected tables` : "Auto Layout the whole diagram";
+  const title = count === 1 ? "Select more objects, or none for the whole diagram" : count ? `Auto Layout the ${count} selected objects` : "Auto Layout the whole diagram";
+  const run = () => void useDiagrams.getState().autoLayout(id, selected);
   return (
     <>
-      <ToolButton icon={Network} label="Auto Layout" title={title} iconOnly disabled={count === 1} onClick={() => void useDiagrams.getState().autoLayout(id, selected)} />
-      <LayoutMenu id={id} />
+      <ToolButton icon={Network} label="Auto Layout" title={title} iconOnly disabled={count === 1} onClick={run} />
+      <LayoutOptions id={id} runTitle={title} canRun={count !== 1} onRun={run} />
       <ToolButton icon={Undo2} label="Undo Layout" title="Undo Auto Layout (⌘Z)" iconOnly disabled={!canUndo} onClick={() => useDiagrams.getState().undoLayout(id)} />
       <LayoutProgress id={id} />
     </>
@@ -302,7 +259,7 @@ function Workspace({ id }: { id: string }) {
           <ToolButton icon={Save} label="Save" title="Save (⌘S)" iconOnly onClick={() => void useSavedDiagrams.getState().save(id)} />
           <ToolButton icon={SaveAll} label="Save As" title="Save As (⌘⇧S)" iconOnly onClick={() => useSavedDiagrams.getState().setPrompt({ kind: "save-as", tabId: id })} />
           <ToolButton icon={RefreshCw} label="Refresh" title="Reload from the database" iconOnly onClick={() => void useDiagrams.getState().load(id)} />
-          <ToolButton icon={ListPlus} label="Tables" title={pendingReport ? "Review the changes in the database first" : "Choose the Tables on This Diagram"} iconOnly disabled={pendingReport} onClick={() => openTablePicker(id)} />
+          <ToolButton icon={ListPlus} label="Objects" title={pendingReport ? "Review the changes in the database first" : "Choose the Objects on This Diagram"} iconOnly disabled={pendingReport} onClick={() => openTablePicker(id)} />
           <LayoutButtons id={id} />
         </div>
         <Banner id={id} />

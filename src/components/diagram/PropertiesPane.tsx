@@ -1,6 +1,9 @@
-import { KeyRound, Link2 } from "lucide-react";
+import { KeyRound, Link2, LoaderCircle } from "lucide-react";
 import { relationshipFacts, relationshipNotes } from "../../lib/diagramCardinality";
 import { foreignKeyRule, matchLabel } from "../../lib/diagramFlow";
+import { objectKind, objectLabel } from "../../lib/diagramDrift";
+import { dependencyId } from "../../lib/diagramLayout";
+import { EXPRESSION_NOTE, FUNCTION_NOTE, sourceLabel } from "../../lib/diagramTrace";
 import type { DiagramForeignKey, DiagramOptions, DiagramTable } from "../../lib/types";
 import { useDiagrams } from "../../stores/diagram";
 
@@ -40,17 +43,37 @@ function DiagramProperties({ id, options }: { id: string; options: DiagramOption
   );
 }
 
-function TableProperties({ table, foreignKeys }: { table: DiagramTable; foreignKeys: DiagramForeignKey[] }) {
+/** A view's trace while it loads or after it fails; its sources show under each column once read. */
+function TraceStatus({ id, oid }: { id: string; oid: number }) {
+  const trace = useDiagrams((s) => s.diagrams[id]?.traces[oid]);
+  if (trace?.status === "ready") return trace.columns.some((c) => !c.source) ? <p className="mt-2 text-xs text-base-content/60">{EXPRESSION_NOTE}</p> : null;
+  if (trace?.status === "error")
+    return (
+      <div className="mt-2 text-xs">
+        <p className="text-error break-words">{trace.error}</p>
+        <button type="button" className="btn btn-xs mt-1" onClick={() => void useDiagrams.getState().traceView(id, oid)}>
+          Retry
+        </button>
+      </div>
+    );
+  return <LoaderCircle className="mt-2 size-4 animate-spin text-base-content/50" aria-label="Reading sources" />;
+}
+
+function TableProperties({ id, table, foreignKeys, showSchema }: { id: string; table: DiagramTable; foreignKeys: DiagramForeignKey[]; showSchema: boolean }) {
+  const kind = objectKind(table);
+  const routine = kind === "function" || kind === "procedure";
+  const view = kind === "view" || kind === "materialized-view";
+  const trace = useDiagrams((s) => s.diagrams[id]?.traces[table.oid]);
   return (
     <div className="p-2 text-sm select-text">
       <h3 className="font-semibold break-all">{table.name}</h3>
       <p className="text-xs text-base-content/60">
-        {table.schema}, {table.columns.length} {table.columns.length === 1 ? "column" : "columns"}
+        {table.schema}, {routine ? kind : `${table.columns.length} ${table.columns.length === 1 ? "column" : "columns"}`}
       </p>
       {table.comment && <p className="mt-1 whitespace-pre-wrap">{table.comment}</p>}
       <ul className="mt-2 text-xs">
-        {table.columns.map((c) => (
-          <li key={c.name} className="flex items-center gap-1 py-0.5" title={c.comment ?? undefined}>
+        {table.columns.map((c, i) => (
+          <li key={i} className="flex items-center gap-1 py-0.5" title={c.comment ?? undefined}>
             {c.primaryKey ? <KeyRound className="size-3 shrink-0 text-warning" /> : foreignKeys.some((fk) => fk.childOid === table.oid && fk.childColumns.includes(c.name)) ? <Link2 className="size-3 shrink-0 text-base-content/40" /> : <span className="w-3 shrink-0" />}
             <span className="min-w-0 truncate">
               {c.name}
@@ -58,10 +81,24 @@ function TableProperties({ table, foreignKeys }: { table: DiagramTable; foreignK
                 : {c.dataType}
                 {c.notNull ? " NOT NULL" : ""}
               </span>
+              {trace?.status === "ready" && <span className="block text-base-content/60">{sourceLabel(trace.columns.find((t) => t.column === c.name)?.source ?? null, showSchema)}</span>}
             </span>
           </li>
         ))}
       </ul>
+      {view && <TraceStatus id={id} oid={table.oid} />}
+      {routine && <p className="mt-2 text-xs text-base-content/60">{FUNCTION_NOTE}</p>}
+    </div>
+  );
+}
+
+function DependencyProperties({ view, source }: { view?: DiagramTable; source?: DiagramTable }) {
+  return (
+    <div className="p-2 text-sm select-text">
+      <h3 className="font-semibold">Dependency</h3>
+      <p className="mt-2 text-xs break-words">
+        {view ? objectLabel(view) : "?"} reads {source ? objectLabel(source) : "?"}
+      </p>
     </div>
   );
 }
@@ -110,16 +147,19 @@ export function PropertiesPane({ id }: { id: string }) {
 
   const table = (oid: number) => structure.tables.find((t) => t.oid === oid);
   const fk = selection.foreignKey;
+  const dependency = selection.edge ? structure.dependencies?.find((d) => dependencyId(d) === selection.edge) : undefined;
   const selected = selection.nodes.length === 1 ? table(Number(selection.nodes[0])) : undefined;
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto" aria-label="Properties">
       {fk ? (
         <ForeignKeyProperties fk={fk} child={table(fk.childOid)} parent={table(fk.parentOid)} />
+      ) : dependency ? (
+        <DependencyProperties view={table(dependency.dependentOid)} source={table(dependency.sourceOid)} />
       ) : selected ? (
-        <TableProperties table={selected} foreignKeys={structure.foreignKeys} />
+        <TableProperties id={id} table={selected} foreignKeys={structure.foreignKeys} showSchema={options.showSchemaNames} />
       ) : selection.nodes.length > 1 ? (
-        <p className="p-2 text-sm text-base-content/60">{selection.nodes.length} tables selected</p>
+        <p className="p-2 text-sm text-base-content/60">{selection.nodes.length} objects selected</p>
       ) : (
         <DiagramProperties id={id} options={options} />
       )}
