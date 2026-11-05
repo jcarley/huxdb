@@ -651,3 +651,39 @@ export interface ExternalFile {
 export interface ExternalSql extends ExternalFile {
   sql: string;
 }
+
+/** A table a diagram can hold. */
+export interface DiagramCandidate {
+  oid: number;
+  schema: string;
+  name: string;
+}
+
+export interface DiagramColumn {
+  name: string;
+  dataType: string;
+  primaryKey: boolean;
+}
+
+export interface DiagramTable {
+  oid: number;
+  schema: string;
+  name: string;
+  columns: DiagramColumn[];
+}
+
+/** One constraint, one line. `rolledUp` means it was declared on a partition of the child or parent. */
+export interface DiagramForeignKey {
+  oid: number;
+  name: string;
+  childOid: number;
+  parentOid: number;
+  childColumns: string[];
+  parentColumns: string[];
+  rolledUp: boolean;
+}
+
+export interface DiagramStructure {
+  tables: DiagramTable[];
+  foreignKeys: DiagramForeignKey[];
+}

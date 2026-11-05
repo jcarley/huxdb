@@ -1,4 +1,5 @@
-import { Database, RefreshCw } from "lucide-react";
+import { Database, Network, RefreshCw } from "lucide-react";
+import { useDiagrams } from "../../stores/diagram";
 import { useExplorer } from "../../stores/explorer";
 import { useContextMenu } from "./ContextMenu";
 import { SchemaNode } from "./SchemaNode";
@@ -25,7 +26,10 @@ export function DatabaseNode({ connectionId, database }: { connectionId: string;
       }}
       onContextMenu={(e) => {
         node.select();
-        openMenu(e, [{ label: "Refresh", icon: RefreshCw, onClick: node.refresh }]);
+        openMenu(e, [
+          { label: "New Diagram", icon: Network, onClick: () => useDiagrams.getState().openPicker({ connectionId, database, schema: "" }) },
+          { label: "Refresh", icon: RefreshCw, onClick: node.refresh },
+        ]);
       }}
       onRetry={node.refresh}
     >

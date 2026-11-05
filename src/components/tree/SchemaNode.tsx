@@ -1,6 +1,7 @@
-import { Eye, FolderTree, Layers, PencilRuler, Plus, RefreshCw, SquareFunction, Table } from "lucide-react";
+import { Eye, FolderTree, Layers, Network, PencilRuler, Plus, RefreshCw, SquareFunction, Table } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { SchemaObjects } from "../../lib/types";
+import { useDiagrams } from "../../stores/diagram";
 import { useExplorer } from "../../stores/explorer";
 import type { ObjectGroup } from "../../stores/explorer";
 import { useTabs } from "../../stores/tabs";
@@ -49,7 +50,10 @@ export function SchemaNode({ connectionId, database, schema }: SchemaProps) {
       }}
       onContextMenu={(e) => {
         node.select();
-        openMenu(e, [{ label: "Refresh", icon: RefreshCw, onClick: node.refresh }]);
+        openMenu(e, [
+          { label: "New Diagram", icon: Network, onClick: () => useDiagrams.getState().openPicker({ connectionId, database, schema }) },
+          { label: "Refresh", icon: RefreshCw, onClick: node.refresh },
+        ]);
       }}
       onRetry={node.refresh}
     >

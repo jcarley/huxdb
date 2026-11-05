@@ -1,4 +1,5 @@
-import { Eye, PencilRuler, SquareTerminal, Table, X } from "lucide-react";
+import { Eye, Network, PencilRuler, SquareTerminal, Table, X } from "lucide-react";
+import { lazy, Suspense } from "react";
 import type { ReactNode } from "react";
 import { dataDirty, useDataEditor } from "../stores/dataEditor";
 import { queryDirty, useQueryEditor } from "../stores/queryEditor";
@@ -13,6 +14,9 @@ import { TableDesigner } from "./designer/TableDesigner";
 import { ViewDesigner } from "./designer/ViewDesigner";
 
 /** The main pane: a permanent Objects tab plus one closable tab per open designer, data editor or query. */
+/** React Flow stays out of the main bundle until the first diagram. */
+const DiagramTab = lazy(() => import("./diagram/DiagramTab"));
+
 export function MainArea() {
   const tabs = useTabs((s) => s.tabs);
   const activeId = useTabs((s) => s.activeId);
@@ -51,6 +55,12 @@ function TabContent({ tab }: { tab: DesignerTab }) {
       return <DataEditor id={tab.id} />;
     case "query":
       return <QueryEditor id={tab.id} />;
+    case "diagram":
+      return (
+        <Suspense fallback={null}>
+          <DiagramTab id={tab.id} />
+        </Suspense>
+      );
   }
 }
 
@@ -77,9 +87,10 @@ function DesignerTabButton({ tab, active }: { tab: DesignerTab; active: boolean 
     view: useViewDesigner((s) => viewDirty(s.designers[tab.id])),
     data: useDataEditor((s) => dataDirty(s.editors[tab.id])),
     query: useQueryEditor((s) => queryDirty(s.editors[tab.id])),
+    diagram: false,
   };
   const dirty = dirtyByKind[tab.kind];
-  const Icon = { table: PencilRuler, view: Eye, data: Table, query: SquareTerminal }[tab.kind];
+  const Icon = { table: PencilRuler, view: Eye, data: Table, query: SquareTerminal, diagram: Network }[tab.kind];
   const { activate, requestClose } = useTabs.getState();
   const title = tabTitle(tab);
 

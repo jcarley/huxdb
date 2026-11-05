@@ -27,7 +27,7 @@ export type CloseQuestion = "save" | "commit";
  * about the text first, because that can fail or be cancelled without touching
  * the transaction, and about the transaction once the text is dealt with.
  */
-export function closeQuestion(kind: "table" | "view" | "data" | "query", textDirty: boolean, textHandled: boolean): CloseQuestion {
+export function closeQuestion(kind: "table" | "view" | "data" | "query" | "diagram", textDirty: boolean, textHandled: boolean): CloseQuestion {
   if (kind === "table" || kind === "view") return "save";
   return kind === "query" && textDirty && !textHandled ? "save" : "commit";
 }

@@ -1,7 +1,8 @@
-import { Eye, FileCode, Plug, SquarePen, Table } from "lucide-react";
+import { Eye, FileCode, Network, Plug, SquarePen, Table } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { newConnection } from "../lib/types";
 import { useConnections } from "../stores/connections";
+import { useDiagrams } from "../stores/diagram";
 import { isGroupSelection, isQueriesSelection, useExplorer } from "../stores/explorer";
 import type { TreeNodeRef } from "../stores/explorer";
 import { useTabs } from "../stores/tabs";
@@ -44,6 +45,15 @@ function openQuery(selected: TreeNodeRef) {
   });
 }
 
+/** The New Diagram picker for the selection's database, with its schema ticked if it has one. */
+function newDiagram(selected: TreeNodeRef) {
+  useDiagrams.getState().openPicker({
+    connectionId: selected.connectionId,
+    database: "database" in selected ? selected.database : useTabs.getState().defaultDatabase(selected.connectionId),
+    schema: "schema" in selected ? selected.schema : "",
+  });
+}
+
 /** Navicat-style module bar. Add a ToolbarButton per module as modules are built. */
 export function Toolbar() {
   const openEditor = useConnections((s) => s.openEditor);
@@ -55,6 +65,7 @@ export function Toolbar() {
     <header className="flex items-center gap-1 border-b border-base-300 bg-base-100 px-2 py-1">
       <ToolbarButton icon={Plug} label="Connection" onClick={() => openEditor(newConnection())} />
       <ToolbarButton icon={SquarePen} label="New Query" disabled={!selected} onClick={() => selected && openQuery(selected)} />
+      <ToolbarButton icon={Network} label="New Diagram" disabled={!selected} onClick={() => selected && newDiagram(selected)} />
       <Separator />
       <ToolbarButton
         icon={Table}

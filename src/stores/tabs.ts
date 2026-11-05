@@ -8,6 +8,7 @@ import { nodeKey } from "./explorer";
 import { sameSource } from "../lib/queryFiles";
 import type { QuerySource } from "../lib/queryFiles";
 import { isDataDirty, useDataEditor } from "./dataEditor";
+import { useDiagrams } from "./diagram";
 import { isQueryDirty, useQueryEditor } from "./queryEditor";
 import { isDirty as isTableDirty, useTableDesigner } from "./tableDesigner";
 import { isViewDirty, useViewDesigner } from "./viewDesigner";
@@ -21,7 +22,7 @@ export interface SchemaRef {
 }
 
 /** A table or view designer, a table's data editor, or a query. */
-export type DesignerKind = "table" | "view" | "data" | "query";
+export type DesignerKind = "table" | "view" | "data" | "query" | "diagram";
 
 export interface DesignerTab extends SchemaRef {
   id: string;
@@ -50,6 +51,8 @@ interface TabsState {
   openDataEditor: (ref: SchemaRef, table: string) => void;
   /** Opens a new query tab. */
   openQuery: (ref: SchemaRef) => void;
+  /** A new diagram of these tables, always in a new tab. Its `schema` is empty: a diagram can span schemas. */
+  openDiagram: (ref: SchemaRef, oids: number[]) => void;
   /** Opens a saved query or an external file, or focuses its tab. */
   openQuerySource: (ref: SchemaRef, name: string, source: QuerySource, sql: string, stamp: number | null) => void;
   /** Focuses the tab of a saved query or external file; false if none is open. */
@@ -77,7 +80,7 @@ interface TabsState {
 const schemaKey = ({ connectionId, database, schema }: SchemaRef) =>
   nodeKey({ kind: "schema", connectionId, database, schema });
 
-const KIND_LABELS: Record<DesignerKind, string> = { table: "Table", view: "View", data: "Data", query: "Query" };
+const KIND_LABELS: Record<DesignerKind, string> = { table: "Table", view: "View", data: "Data", query: "Query", diagram: "Diagram" };
 
 export const tabTitle = (tab: DesignerTab) => {
   const where = tab.schema ? `${tab.database}.${tab.schema}` : tab.database;
@@ -86,6 +89,7 @@ export const tabTitle = (tab: DesignerTab) => {
 
 /** Numbers query tabs, which have no object to be named after. */
 let queryCount = 0;
+let diagramCount = 0;
 
 /** Whether a tab has unsaved edits (or an open transaction), asking the store for its kind. */
 export const isTabDirty = (tab: DesignerTab) => {
@@ -98,6 +102,8 @@ export const isTabDirty = (tab: DesignerTab) => {
       return isDataDirty(tab.id);
     case "query":
       return isQueryDirty(tab.id);
+    case "diagram":
+      return false;
   }
 };
 
@@ -112,6 +118,8 @@ const storeFor = (kind: DesignerKind): { open: (tab: DesignerTab) => void; dispo
       return useDataEditor.getState();
     case "query":
       return useQueryEditor.getState();
+    case "diagram":
+      return { open: (tab) => useDiagrams.getState().open(tab, []), dispose: useDiagrams.getState().dispose };
   }
 };
 
@@ -150,6 +158,12 @@ export const useTabs = create<TabsState>((set, get) => ({
   openQuery: ({ connectionId, database, schema }) => {
     const tab: DesignerTab = { id: crypto.randomUUID(), kind: "query", connectionId, database, schema, name: `Query ${++queryCount}` };
     useQueryEditor.getState().open(tab);
+    set((s) => ({ tabs: [...s.tabs, tab], activeId: tab.id }));
+  },
+
+  openDiagram: ({ connectionId, database, schema }, oids) => {
+    const tab: DesignerTab = { id: crypto.randomUUID(), kind: "diagram", connectionId, database, schema, name: `Diagram ${++diagramCount}` };
+    useDiagrams.getState().open(tab, oids);
     set((s) => ({ tabs: [...s.tabs, tab], activeId: tab.id }));
   },
 

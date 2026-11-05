@@ -1,11 +1,11 @@
 // Typed wrappers around the Tauri commands in `src-tauri/src/connections/mod.rs`,
 // `src-tauri/src/explorer/mod.rs`, `src-tauri/src/designer/mod.rs`, `src-tauri/src/editor/mod.rs`,
-// `src-tauri/src/query/mod.rs` and `src-tauri/src/saved_queries/mod.rs`.
+// `src-tauri/src/query/mod.rs`, `src-tauri/src/saved_queries/mod.rs` and `src-tauri/src/diagram/mod.rs`.
 // Commands reject with a plain error string.
 
 import { invoke } from "@tauri-apps/api/core";
 import type { Channel } from "@tauri-apps/api/core";
-import type { CompletionCatalog, ConnectionConfig, DataPage, DataSpec, DataTarget, EditBatch, ExternalFile, ExternalSql, QualifiedName, QueryEvent, QueryResult, QueryTarget, RunScope, SavedQuery, SavedQueryInfo, SavedQuerySummary, SchemaObjects, TableDesign, TableInfo, TextRange, ViewDesign, ViewInfo } from "./types";
+import type { CompletionCatalog, ConnectionConfig, DataPage, DataSpec, DataTarget, DiagramCandidate, DiagramStructure, EditBatch, ExternalFile, ExternalSql, QualifiedName, QueryEvent, QueryResult, QueryTarget, RunScope, SavedQuery, SavedQueryInfo, SavedQuerySummary, SchemaObjects, TableDesign, TableInfo, TextRange, ViewDesign, ViewInfo } from "./types";
 
 export const listConnections = () => invoke<ConnectionConfig[]>("list_connections");
 
@@ -41,6 +41,12 @@ export const listTables = (connectionId: string, database: string, schema: strin
 
 export const listViews = (connectionId: string, database: string, schema: string) =>
   invoke<ViewInfo[]>("list_views", { connectionId, database, schema });
+
+export const diagramCandidates = (connectionId: string, database: string) =>
+  invoke<DiagramCandidate[]>("diagram_candidates", { connectionId, database });
+
+export const diagramStructure = (connectionId: string, database: string, oids: number[]) =>
+  invoke<DiagramStructure>("diagram_structure", { connectionId, database, oids });
 
 // Table designer (`src-tauri/src/designer/mod.rs`).
 

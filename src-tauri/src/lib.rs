@@ -1,5 +1,6 @@
 mod connections;
 mod designer;
+mod diagram;
 mod editor;
 mod explorer;
 mod fsutil;
@@ -104,6 +105,8 @@ pub fn run() {
             saved_queries::open_external_sql,
             saved_queries::save_external_sql_as,
             saved_queries::write_external_sql,
+            diagram::diagram_candidates,
+            diagram::diagram_structure,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
