@@ -21,12 +21,13 @@ const CANDIDATES: &str = "SELECT c.oid::int8, n.nspname::text, c.relname::text
       AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
     ORDER BY 2, 3";
 
-const TABLES: &str = "SELECT c.oid::int8, n.nspname::text, c.relname::text
+const TABLES: &str = "SELECT c.oid::int8, n.nspname::text, c.relname::text, obj_description(c.oid, 'pg_class')
     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE c.oid = ANY ($1::oid[])
     ORDER BY 2, 3";
 
-const COLUMNS: &str = "SELECT a.attrelid::int8, a.attname::text, format_type(a.atttypid, a.atttypmod), a.attnotnull
+const COLUMNS: &str = "SELECT a.attrelid::int8, a.attname::text, format_type(a.atttypid, a.atttypmod), a.attnotnull,
+        col_description(a.attrelid, a.attnum)
     FROM pg_attribute a
     WHERE a.attrelid = ANY ($1::oid[]) AND a.attnum > 0 AND NOT a.attisdropped
     ORDER BY a.attrelid, a.attnum";
@@ -40,7 +41,8 @@ const PRIMARY_KEYS: &str = "SELECT i.indrelid::int8, a.attname::text
 /// is rolled up to the root. Columns are read by name from the row that owns them, because a
 /// partition's attnums can differ from its parent's.
 const FOREIGN_KEYS: &str = "SELECT con.oid::int8, con.conname::text, r.child::int8, r.parent::int8,
-       k.child_cols, k.parent_cols, r.child <> con.conrelid OR r.parent <> con.confrelid
+       k.child_cols, k.parent_cols, r.child <> con.conrelid OR r.parent <> con.confrelid,
+       con.confmatchtype::text, con.confupdtype::text, con.confdeltype::text
 FROM pg_constraint con
 CROSS JOIN LATERAL (
     SELECT COALESCE(pg_partition_root(con.conrelid)::oid, con.conrelid) AS child,
@@ -56,6 +58,16 @@ CROSS JOIN LATERAL (
 WHERE con.contype = 'f' AND con.conparentid = 0
   AND r.child = ANY ($1::oid[]) AND r.parent = ANY ($1::oid[])
 ORDER BY r.child, con.conname";
+
+/// Tables one foreign key away from the given ones, in either direction, rolled up as above.
+const RELATED: &str = "SELECT DISTINCT other::int8
+FROM pg_constraint con
+CROSS JOIN LATERAL (
+    SELECT COALESCE(pg_partition_root(con.conrelid)::oid, con.conrelid) AS child,
+           COALESCE(pg_partition_root(con.confrelid)::oid, con.confrelid) AS parent
+) r
+CROSS JOIN LATERAL (VALUES (CASE WHEN r.child = ANY ($1::oid[]) THEN r.parent END), (CASE WHEN r.parent = ANY ($1::oid[]) THEN r.child END)) AS o(other)
+WHERE con.contype = 'f' AND con.conparentid = 0 AND other IS NOT NULL AND NOT other = ANY ($1::oid[])";
 
 /// A table the picker can offer.
 #[derive(Debug, Serialize)]
@@ -73,6 +85,7 @@ pub struct DiagramColumn {
     pub data_type: String,
     pub not_null: bool,
     pub primary_key: bool,
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,6 +94,7 @@ pub struct DiagramTable {
     pub oid: i64,
     pub schema: String,
     pub name: String,
+    pub comment: Option<String>,
     pub columns: Vec<DiagramColumn>,
 }
 
@@ -96,6 +110,11 @@ pub struct DiagramForeignKey {
     pub parent_columns: Vec<String>,
     /// Declared on a partition, and drawn from its root.
     pub rolled_up: bool,
+    /// `pg_constraint`'s codes: `s` simple, `f` full.
+    pub match_type: String,
+    /// `a` no action, `r` restrict, `c` cascade, `n` set null, `d` set default.
+    pub on_update: String,
+    pub on_delete: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -105,10 +124,11 @@ pub struct DiagramStructure {
     pub foreign_keys: Vec<DiagramForeignKey>,
 }
 
-type TableRow = (i64, String, String);
-type ColumnRow = (i64, String, String, bool);
+type CandidateRow = (i64, String, String);
+type TableRow = (i64, String, String, Option<String>);
+type ColumnRow = (i64, String, String, bool, Option<String>);
 type PrimaryKeyRow = (i64, String);
-type ForeignKeyRow = (i64, String, i64, i64, Vec<String>, Vec<String>, bool);
+type ForeignKeyRow = (i64, String, i64, i64, Vec<String>, Vec<String>, bool, String, String, String);
 
 fn err(e: sqlx::Error) -> String {
     // lock_not_available, from lock_timeout.
@@ -119,7 +139,7 @@ fn err(e: sqlx::Error) -> String {
 }
 
 pub async fn list_candidates(pool: &PgPool) -> Result<Vec<DiagramCandidate>, String> {
-    let rows: Vec<TableRow> = sqlx::query_as(CANDIDATES).fetch_all(pool).await.map_err(err)?;
+    let rows: Vec<CandidateRow> = sqlx::query_as(CANDIDATES).fetch_all(pool).await.map_err(err)?;
     Ok(rows.into_iter().map(|(oid, schema, name)| DiagramCandidate { oid, schema, name }).collect())
 }
 
@@ -139,20 +159,27 @@ pub async fn load_structure(pool: &PgPool, oids: &[i64]) -> Result<DiagramStruct
     Ok(assemble(tables, columns, primary_keys, foreign_keys))
 }
 
+/// For Add Related Tables, which offers these in the picker rather than adding them: a hub
+/// table can have hundreds.
+pub async fn related_tables(pool: &PgPool, oids: &[i64]) -> Result<Vec<i64>, String> {
+    let oids: Vec<Oid> = oids.iter().map(|&oid| Oid(oid as u32)).collect();
+    sqlx::query_scalar(RELATED).bind(&oids).fetch_all(pool).await.map_err(err)
+}
+
 fn assemble(tables: Vec<TableRow>, columns: Vec<ColumnRow>, primary_keys: Vec<PrimaryKeyRow>, foreign_keys: Vec<ForeignKeyRow>) -> DiagramStructure {
     let primary_keys: HashSet<(i64, String)> = primary_keys.into_iter().collect();
     let mut by_table: HashMap<i64, Vec<DiagramColumn>> = HashMap::new();
-    for (oid, name, data_type, not_null) in columns {
+    for (oid, name, data_type, not_null, comment) in columns {
         let primary_key = primary_keys.contains(&(oid, name.clone()));
-        by_table.entry(oid).or_default().push(DiagramColumn { name, data_type, not_null, primary_key });
+        by_table.entry(oid).or_default().push(DiagramColumn { name, data_type, not_null, primary_key, comment });
     }
     let tables = tables
         .into_iter()
-        .map(|(oid, schema, name)| DiagramTable { oid, schema, name, columns: by_table.remove(&oid).unwrap_or_default() })
+        .map(|(oid, schema, name, comment)| DiagramTable { oid, schema, name, comment, columns: by_table.remove(&oid).unwrap_or_default() })
         .collect();
     let foreign_keys = foreign_keys
         .into_iter()
-        .map(|(oid, name, child_oid, parent_oid, child_columns, parent_columns, rolled_up)| DiagramForeignKey {
+        .map(|(oid, name, child_oid, parent_oid, child_columns, parent_columns, rolled_up, match_type, on_update, on_delete)| DiagramForeignKey {
             oid,
             name,
             child_oid,
@@ -160,6 +187,9 @@ fn assemble(tables: Vec<TableRow>, columns: Vec<ColumnRow>, primary_keys: Vec<Pr
             child_columns,
             parent_columns,
             rolled_up,
+            match_type,
+            on_update,
+            on_delete,
         })
         .collect();
     DiagramStructure { tables, foreign_keys }
@@ -176,16 +206,19 @@ mod tests {
     #[test]
     fn marks_primary_keys_and_keeps_column_order() {
         let structure = assemble(
-            vec![(1, "public".into(), "orders".into()), (2, "public".into(), "empty".into())],
-            vec![(1, "id".into(), "bigint".into(), true), (1, "note".into(), "text".into(), false), (9, "gone".into(), "text".into(), false)],
+            vec![(1, "public".into(), "orders".into(), Some("Orders".into())), (2, "public".into(), "empty".into(), None)],
+            vec![(1, "id".into(), "bigint".into(), true, None), (1, "note".into(), "text".into(), false, Some("Free text".into())), (9, "gone".into(), "text".into(), false, None)],
             vec![(1, "id".into())],
-            vec![(5, "fk".into(), 1, 1, vec!["a".into()], vec!["id".into()], false)],
+            vec![(5, "fk".into(), 1, 1, vec!["a".into()], vec!["id".into()], false, "s".into(), "a".into(), "c".into())],
         );
         let orders = &structure.tables[0];
         assert_eq!(orders.columns.iter().map(|c| (c.name.as_str(), c.primary_key)).collect::<Vec<_>>(), [("id", true), ("note", false)]);
         assert!(orders.columns[0].not_null && !orders.columns[1].not_null);
         assert!(structure.tables[1].columns.is_empty());
         assert_eq!(structure.foreign_keys[0].child_columns, ["a"]);
+        assert_eq!(structure.foreign_keys[0].on_delete, "c");
+        assert_eq!(orders.comment.as_deref(), Some("Orders"));
+        assert_eq!(orders.columns[1].comment.as_deref(), Some("Free text"));
     }
 
     /// A schema name of its own per run, so the test never has to drop anything.
@@ -212,7 +245,9 @@ mod tests {
              CREATE TABLE {a}.parent (x int, y int, PRIMARY KEY (y, x), gone int);
              ALTER TABLE {a}.parent DROP COLUMN gone;
              CREATE TABLE {b}.pair (a_x int, a_y int, other int, FOREIGN KEY (a_y, a_x) REFERENCES {a}.parent (y, x));
-             CREATE TABLE {b}.self (id int PRIMARY KEY, up int REFERENCES {b}.self (id));
+             CREATE TABLE {b}.self (id int PRIMARY KEY, up int REFERENCES {b}.self (id) ON DELETE CASCADE ON UPDATE SET NULL);
+             COMMENT ON TABLE {b}.self IS 'Self table';
+             COMMENT ON COLUMN {b}.self.up IS 'Its parent';
              CREATE TABLE {b}.twice (one int REFERENCES {b}.self (id), two int REFERENCES {b}.self (id));
              CREATE TABLE {a}.events (id int, at date, owner int REFERENCES {b}.self (id), PRIMARY KEY (id, at)) PARTITION BY RANGE (at);
              CREATE TABLE {a}.events_2026 PARTITION OF {a}.events FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');",
@@ -240,10 +275,22 @@ mod tests {
         assert_eq!(pair.parent_oid, oid("parent"));
 
         assert_eq!(structure.foreign_keys.iter().filter(|f| f.child_oid == oid("self")).count(), 1);
+        let own = structure.foreign_keys.iter().find(|f| f.child_oid == oid("self")).unwrap();
+        assert_eq!((own.match_type.as_str(), own.on_update.as_str(), own.on_delete.as_str()), ("s", "n", "c"));
+        let self_table = structure.tables.iter().find(|t| t.name == "self").unwrap();
+        assert_eq!(self_table.comment.as_deref(), Some("Self table"));
+        assert_eq!(self_table.columns[1].comment.as_deref(), Some("Its parent"));
         assert_eq!(structure.foreign_keys.iter().filter(|f| f.child_oid == oid("twice")).count(), 2);
         let events: Vec<_> = structure.foreign_keys.iter().filter(|f| f.child_oid == oid("events")).collect();
         assert_eq!(events.len(), 1, "the partition's clone must not draw a second line");
         assert!(!events[0].rolled_up);
+
+        let mut related = related_tables(&pool, &[oid("self")]).await.unwrap();
+        related.sort();
+        let mut expected = vec![oid("twice"), oid("events")];
+        expected.sort();
+        assert_eq!(related, expected, "both directions, no partitions, and not the table itself");
+        assert_eq!(related_tables(&pool, &[oid("twice")]).await.unwrap(), [oid("self")]);
     }
 
     #[tokio::test]

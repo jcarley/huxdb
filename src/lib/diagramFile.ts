@@ -4,22 +4,22 @@ import { foreignKeyKey, tableKey } from "./diagramDrift";
 import type { FkEdge, TableNode } from "./diagramFlow";
 import { partition, shelves } from "./diagramLayout";
 import type { Box, Layout, Point } from "./diagramLayout";
-import type { DiagramLayoutFile, DiagramStructure, DiagramViewport } from "./types";
+import type { DiagramLayoutFile, DiagramOptions, DiagramStructure, DiagramViewport } from "./types";
 
 const NEW_TABLE_GAP = 60;
 
 /** What makes a diagram differ from its last save. Pan and zoom are saved but aren't in it. */
-export const layoutSignature = (nodes: TableNode[]) =>
-  nodes
+export const layoutSignature = (nodes: TableNode[], options?: DiagramOptions) =>
+  `${JSON.stringify(options)}|${nodes
     .map((n) => `${n.id}:${Math.round(n.position.x)},${Math.round(n.position.y)}`)
     .sort()
-    .join(";");
+    .join(";")}`;
 
 /**
  * The layout to save. Positions in `previous` stay, so a table that's gone from the database
  * keeps its place until the report is accepted, in case it comes back.
  */
-export function captureLayout(structure: DiagramStructure, nodes: TableNode[], edges: FkEdge[], previous: DiagramLayoutFile | null, viewport: DiagramViewport | null): DiagramLayoutFile {
+export function captureLayout(structure: DiagramStructure, nodes: TableNode[], edges: FkEdge[], previous: DiagramLayoutFile | null, viewport: DiagramViewport | null, options?: DiagramOptions): DiagramLayoutFile {
   const tables = new Map(structure.tables.map((t) => [t.oid, t]));
   const positions = { ...previous?.tables };
   for (const node of nodes) {
@@ -33,7 +33,7 @@ export function captureLayout(structure: DiagramStructure, nodes: TableNode[], e
     const child = tables.get(fk.childOid);
     if (route && child) routes[foreignKeyKey(fk, child)] = route;
   }
-  return { tables: positions, routes, viewport };
+  return { tables: positions, routes, viewport, options };
 }
 
 /**

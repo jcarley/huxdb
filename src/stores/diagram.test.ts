@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../lib/api";
 import { tableKey } from "../lib/diagramDrift";
 import type { DiagramColumn, DiagramStructure, DiagramTable, SavedDiagram } from "../lib/types";
+import { DEFAULT_OPTIONS } from "../lib/diagramLayout";
 import { useDiagrams } from "./diagram";
 
 vi.mock("../lib/api", () => ({
@@ -15,8 +16,8 @@ vi.mock("../lib/diagramBrowser", () => ({
   runElk: async (graph: { children: { id: string }[] }) => ({ ...graph, width: 100, height: 100, children: graph.children.map((c) => ({ ...c, x: 0, y: 0 })) }),
 }));
 
-const column = (name: string, more: Partial<DiagramColumn> = {}): DiagramColumn => ({ name, dataType: "bigint", notNull: false, primaryKey: false, ...more });
-const table = (oid: number, name: string, columns = [column("id")]): DiagramTable => ({ oid, schema: "public", name, columns });
+const column = (name: string, more: Partial<DiagramColumn> = {}): DiagramColumn => ({ name, dataType: "bigint", notNull: false, primaryKey: false, comment: null, ...more });
+const table = (oid: number, name: string, columns = [column("id")]): DiagramTable => ({ oid, schema: "public", name, comment: null, columns });
 const structure = (...tables: DiagramTable[]): DiagramStructure => ({ tables, foreignKeys: [] });
 const candidates = (s: DiagramStructure) => s.tables.map(({ oid, schema, name }) => ({ oid, schema, name }));
 const tab = { id: "t", connectionId: "c", database: "db" };
@@ -260,5 +261,130 @@ describe("accepting the report", () => {
     await openSaved(savedDiagram(s));
     await store().acceptReport("t", { add: [], renames: [] });
     expect(editor().nodes.map((n) => n.data.table.name)).toEqual(["a"]);
+  });
+});
+
+describe("options", () => {
+  const s = structure(table(1, "a"), table(2, "b"));
+
+  it("default to showing schemas for a diagram of several", async () => {
+    database({ tables: [table(1, "a"), { ...table(2, "b"), schema: "other" }], foreignKeys: [] });
+    store().open(tab, [1, 2]);
+    await settled();
+    expect(editor().options?.showSchemaNames).toBe(true);
+  });
+
+  it("are filled in for a file saved before options existed, which stays clean", async () => {
+    database(s);
+    await openSaved(savedDiagram(s));
+    expect(editor().options).toEqual(DEFAULT_OPTIONS);
+    expect(editor().dirty).toBe(false);
+  });
+
+  it("come back from the file", async () => {
+    database(s);
+    const saved = savedDiagram(s);
+    saved.layout.options = { ...DEFAULT_OPTIONS, fontSize: 14, blackAndWhite: true };
+    await openSaved(saved);
+    expect(editor().options).toMatchObject({ fontSize: 14, blackAndWhite: true });
+    expect(editor().nodes[0].data.options.fontSize).toBe(14);
+    expect(editor().dirty).toBe(false);
+  });
+
+  it("grow tables in place, offer a layout, and need a save", async () => {
+    database(s);
+    await openSaved(savedDiagram(s));
+    const before = editor().nodes[1];
+    await store().setOptions("t", { fontSize: 16 });
+    const after = editor().nodes[1];
+    expect(after.position).toEqual(before.position);
+    expect(after.height).toBeGreaterThan(before.height!);
+    expect(editor()).toMatchObject({ offerLayout: true, dirty: true });
+    expect(store().content("t")?.layout.options?.fontSize).toBe(16);
+  });
+
+  it("don't offer a layout when no table changed size, and are clean again when undone", async () => {
+    database(s);
+    await openSaved(savedDiagram(s));
+    await store().setOptions("t", { blackAndWhite: true });
+    expect(editor()).toMatchObject({ offerLayout: false, dirty: true });
+    await store().setOptions("t", { blackAndWhite: false });
+    expect(editor().dirty).toBe(false);
+  });
+
+  it("drop routes only when they move rows", async () => {
+    const linked: DiagramStructure = { tables: [table(1, "a", [column("id"), column("b_id")]), table(2, "b")], foreignKeys: [{ oid: 9, name: "fk", childOid: 1, parentOid: 2, childColumns: ["b_id"], parentColumns: ["id"], rolledUp: false, matchType: "s", onUpdate: "a", onDelete: "a" }] };
+    database(linked);
+    const saved = savedDiagram(linked);
+    saved.layout.routes = { [JSON.stringify(["public", "a", "fk"])]: [{ x: 5, y: 5 }] };
+    await openSaved(saved);
+    expect(editor().edges[0].data?.points).toHaveLength(1);
+    await store().setOptions("t", { showNotNull: true });
+    expect(editor().edges[0].data?.points).toHaveLength(1);
+    await store().setOptions("t", { fontSize: 14 });
+    expect(editor().edges[0].data?.points).toBeUndefined();
+  });
+});
+
+describe("selection", () => {
+  const s = structure(table(1, "a"), table(2, "b"));
+
+  it("selecting from the list marks one node, and clears any other", async () => {
+    database(s);
+    await openSaved(savedDiagram(s));
+    store().selectNode("t", "1");
+    store().selectNode("t", "2");
+    expect(editor().nodes.map((n) => !!n.selected)).toEqual([false, true]);
+    expect(editor().selection).toEqual({ nodes: ["2"], edge: null });
+  });
+
+  it("doesn't write the same selection again, since React Flow repeats itself", async () => {
+    database(s);
+    await openSaved(savedDiagram(s));
+    store().select("t", { nodes: ["1"], edge: null });
+    const before = editor();
+    store().select("t", { nodes: ["1"], edge: null });
+    expect(editor()).toBe(before);
+  });
+});
+
+describe("changing the tables", () => {
+  const s = structure(table(1, "a"), table(2, "b"), table(3, "c"));
+
+  it("removes a table from the diagram and the saved set, without calling it drift", async () => {
+    database(s);
+    await openSaved(savedDiagram(s));
+    store().removeTables("t", ["2"]);
+    expect(editor().nodes.map((n) => n.data.table.name)).toEqual(["a", "c"]);
+    expect(editor().dirty).toBe(true);
+    const content = store().content("t")!;
+    expect(content.objects).toBe(2);
+    expect(content.snapshot.tables.map((t) => t.name)).toEqual(["a", "c"]);
+    expect(content.layout.tables[tableKey(table(2, "b"))]).toBeUndefined();
+    // It's still in the database, and left out on purpose, so it isn't "added" later.
+    expect(content.known).toContain(tableKey(table(2, "b")));
+    await store().load("t");
+    expect(editor().report).toBeNull();
+  });
+
+  it("removes a table's foreign keys with it", async () => {
+    const linked: DiagramStructure = { ...s, foreignKeys: [{ oid: 9, name: "fk", childOid: 1, parentOid: 2, childColumns: ["id"], parentColumns: ["id"], rolledUp: false, matchType: "s", onUpdate: "a", onDelete: "a" }] };
+    database(linked);
+    await openSaved(savedDiagram(linked));
+    store().removeTables("t", ["2"]);
+    expect(editor().edges).toEqual([]);
+    expect(store().content("t")?.snapshot.foreignKeys).toEqual([]);
+  });
+
+  it("adds and drops tables, keeping those that stay in place", async () => {
+    const now = structure(table(1, "a"), table(2, "b"), table(3, "c"), table(4, "d"));
+    database(now);
+    await openSaved(savedDiagram(structure(table(1, "a"), table(2, "b"), table(3, "c")), now.tables.map(tableKey)));
+    const place = editor().nodes[1].position;
+    await store().setTables("t", [2, 3, 4]);
+    expect(editor().nodes.map((n) => n.data.table.name)).toEqual(["b", "c", "d"]);
+    expect(editor().nodes[0].position).toEqual(place);
+    expect(editor()).toMatchObject({ offerLayout: true, dirty: true, report: null });
+    expect(store().content("t")?.layout.tables[tableKey(table(1, "a"))]).toBeUndefined();
   });
 });

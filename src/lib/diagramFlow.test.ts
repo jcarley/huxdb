@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { dropRoutes, revealHubLines, toEdges, toNodes } from "./diagramFlow";
-import { HEADER, MAX_ROWS } from "./diagramLayout";
+import { dropRoutes, foreignKeyRule, matchLabel, reshapeNodes, revealHubLines, toEdges, toNodes } from "./diagramFlow";
+import { DEFAULT_OPTIONS, headerHeight, MAX_ROWS } from "./diagramLayout";
 import type { Box, Layout } from "./diagramLayout";
 import type { DiagramForeignKey, DiagramStructure, DiagramTable } from "./types";
 
@@ -8,7 +8,8 @@ const table = (oid: number, schema = "public", columns = 3): DiagramTable => ({
   oid,
   schema,
   name: `t${oid}`,
-  columns: Array.from({ length: columns }, (_, i) => ({ name: `c${i}`, dataType: "integer", notNull: false, primaryKey: i === 0 })),
+  comment: null,
+  columns: Array.from({ length: columns }, (_, i) => ({ name: `c${i}`, dataType: "integer", notNull: false, primaryKey: i === 0, comment: null })),
 });
 const fk = (oid: number, childOid: number, parentOid: number, childColumns = ["c1"], parentColumns = ["c0"]): DiagramForeignKey => ({
   oid,
@@ -18,6 +19,9 @@ const fk = (oid: number, childOid: number, parentOid: number, childColumns = ["c
   childColumns,
   parentColumns,
   rolledUp: false,
+  matchType: "s",
+  onUpdate: "a",
+  onDelete: "a",
 });
 const layoutOf = (structure: DiagramStructure, hubs: number[] = []): Layout => ({
   positions: new Map(structure.tables.map((t) => [t.oid, { x: t.oid * 10, y: 0 }])),
@@ -55,14 +59,27 @@ describe("toNodes", () => {
 
   it("puts a capped table's handles on its header", () => {
     const s = { tables: [table(1, "public", MAX_ROWS + 1), table(2)], foreignKeys: [fk(1, 1, 2, ["c30"])] };
-    expect(toNodes(s, layoutOf(s), boxes(s))[0].data.handles[0].top).toBe(HEADER / 2);
+    expect(toNodes(s, layoutOf(s), boxes(s))[0].data.handles[0].top).toBe(headerHeight(DEFAULT_OPTIONS) / 2);
   });
+});
 
-  it("shows schemas only when there's more than one", () => {
-    const one = { tables: [table(1), table(2)], foreignKeys: [] };
-    expect(toNodes(one, layoutOf(one), boxes(one))[0].data.showSchema).toBe(false);
-    const two = { tables: [table(1), table(2, "other")], foreignKeys: [] };
-    expect(toNodes(two, layoutOf(two), boxes(two))[0].data.showSchema).toBe(true);
+it("names foreign key rules", () => {
+  expect([foreignKeyRule("c"), foreignKeyRule("n"), foreignKeyRule("?")]).toEqual(["Cascade", "Set null", "?"]);
+  expect([matchLabel("s"), matchLabel("f")]).toEqual(["Simple", "Full"]);
+});
+
+describe("reshapeNodes", () => {
+  const s = { tables: [table(1), table(2)], foreignKeys: [fk(1, 1, 2)] };
+
+  it("keeps places and selection, and moves handles for the new sizes", () => {
+    const nodes = toNodes(s, layoutOf(s), boxes(s));
+    const moved = [{ ...nodes[0], position: { x: 77, y: 5 }, selected: true }, nodes[1]];
+    const large = { ...DEFAULT_OPTIONS, fontSize: 16 };
+    const next = reshapeNodes(moved, s, new Map([[1, { width: 200, height: 90 }], [2, { width: 200, height: 90 }]]), large);
+    expect(next[0]).toMatchObject({ position: { x: 77, y: 5 }, selected: true, width: 200 });
+    expect(next[1].selected).toBeUndefined();
+    expect(next[0].data.options.fontSize).toBe(16);
+    expect(next[0].data.handles[0].top).not.toBe(nodes[0].data.handles[0].top);
   });
 });
 

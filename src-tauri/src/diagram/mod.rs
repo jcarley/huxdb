@@ -38,6 +38,19 @@ pub async fn diagram_structure(
     postgres::load_structure(&pool, &oids).await
 }
 
+/// Tables one foreign key away from these, for Add Related Tables.
+#[tauri::command]
+pub async fn diagram_related(
+    store: State<'_, ConnectionStore>,
+    sessions: State<'_, SessionManager>,
+    connection_id: String,
+    database: String,
+    oids: Vec<i64>,
+) -> Result<Vec<i64>, String> {
+    let pool = pool_for(&store, &sessions, &connection_id, Some(&database))?;
+    postgres::related_tables(&pool, &oids).await
+}
+
 #[tauri::command]
 pub fn list_diagrams(store: State<'_, DiagramStore>, connection_id: String) -> Result<Vec<DiagramInfo>, String> {
     store.list(&connection_id)

@@ -2,9 +2,9 @@
 // come from React Flow, so stores can use this without pulling the library into the main bundle.
 
 import type { Edge, Node } from "@xyflow/react";
-import { columnOffset } from "./diagramLayout";
+import { columnOffset, DEFAULT_OPTIONS } from "./diagramLayout";
 import type { Box, Layout, Point } from "./diagramLayout";
-import type { DiagramForeignKey, DiagramStructure, DiagramTable } from "./types";
+import type { DiagramForeignKey, DiagramOptions, DiagramStructure, DiagramTable } from "./types";
 
 export interface TableHandle {
   id: string;
@@ -17,8 +17,7 @@ export interface TableData extends Record<string, unknown> {
   /** Only columns in a relationship get one: on every row, WebKit falls from 60 to about 24 fps. */
   handles: TableHandle[];
   foreignKeyColumns: Set<string>;
-  /** Several schemas are on the diagram, so a bare name could mean two tables. */
-  showSchema: boolean;
+  options: DiagramOptions;
 }
 
 export interface FkData extends Record<string, unknown> {
@@ -34,18 +33,17 @@ export type FkEdge = Edge<FkData, "fk">;
 const childHandle = (fk: DiagramForeignKey) => `right:${fk.childColumns[0]}`;
 const parentHandle = (fk: DiagramForeignKey) => `left:${fk.parentColumns[0]}`;
 
-export function toNodes({ tables, foreignKeys }: DiagramStructure, layout: Layout, boxes: Map<number, Box>): TableNode[] {
-  const showSchema = new Set(tables.map((t) => t.schema)).size > 1;
+export function toNodes({ tables, foreignKeys }: DiagramStructure, layout: Layout, boxes: Map<number, Box>, options = DEFAULT_OPTIONS): TableNode[] {
   return tables.map((table) => {
     const handles = new Map<string, TableHandle>();
     const foreignKeyColumns = new Set<string>();
     for (const fk of foreignKeys) {
       if (fk.childOid === table.oid) {
         for (const column of fk.childColumns) foreignKeyColumns.add(column);
-        handles.set(childHandle(fk), { id: childHandle(fk), side: "right", top: columnOffset(table, fk.childColumns[0]) });
+        handles.set(childHandle(fk), { id: childHandle(fk), side: "right", top: columnOffset(table, fk.childColumns[0], options) });
       }
       if (fk.parentOid === table.oid) {
-        handles.set(parentHandle(fk), { id: parentHandle(fk), side: "left", top: columnOffset(table, fk.parentColumns[0]) });
+        handles.set(parentHandle(fk), { id: parentHandle(fk), side: "left", top: columnOffset(table, fk.parentColumns[0], options) });
       }
     }
     return {
@@ -53,7 +51,7 @@ export function toNodes({ tables, foreignKeys }: DiagramStructure, layout: Layou
       type: "table",
       position: layout.positions.get(table.oid) ?? { x: 0, y: 0 },
       ...boxes.get(table.oid)!,
-      data: { table, handles: [...handles.values()], foreignKeyColumns, showSchema },
+      data: { table, handles: [...handles.values()], foreignKeyColumns, options },
     };
   });
 }
@@ -85,6 +83,20 @@ export function revealHubLines(edges: FkEdge[], selected: Set<string>) {
     return { ...edge, hidden };
   });
   return changed ? next : edges;
+}
+
+const RULES: Record<string, string> = { a: "No action", r: "Restrict", c: "Cascade", n: "Set null", d: "Set default" };
+
+/** `pg_constraint`'s `confupdtype` and `confdeltype` in words. */
+export const foreignKeyRule = (code: string) => RULES[code] ?? code;
+export const matchLabel = (code: string) => (code === "f" ? "Full" : code === "p" ? "Partial" : "Simple");
+
+/** Tables in their current places, redrawn for new options. Sizes change, positions don't. */
+export function reshapeNodes(nodes: TableNode[], structure: DiagramStructure, boxes: Map<number, Box>, options: DiagramOptions): TableNode[] {
+  const positions = new Map(nodes.map((n) => [Number(n.id), n.position]));
+  const redrawn = toNodes(structure, { positions, routes: new Map(), hubEdges: new Set() }, boxes, options);
+  const selected = new Set(nodes.flatMap((n) => (n.selected ? [n.id] : [])));
+  return redrawn.map((n) => (selected.has(n.id) ? { ...n, selected: true } : n));
 }
 
 /** ELK has no routing-only pass, so a moved table's lines fall back to a plain path rather than keep a stale route. */

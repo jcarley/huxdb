@@ -6,10 +6,28 @@
 // taken out, what's left falls into clusters, ELK lays out each one, and the results are packed.
 
 import type { ElkExtendedEdge, ElkNode } from "elkjs/lib/elk-api";
-import type { DiagramForeignKey, DiagramTable } from "./types";
+import type { DiagramColumn, DiagramForeignKey, DiagramOptions, DiagramTable } from "./types";
 
-export const HEADER = 26;
-export const ROW = 18;
+export const DEFAULT_OPTIONS: DiagramOptions = { showFieldComments: false, showNotNull: false, showObjectComments: false, showSchemaNames: false, fontSize: 11, blackAndWhite: false };
+
+/** A diagram of several schemas shows them, because a bare name could mean two tables. */
+export const defaultOptions = (tables: DiagramTable[]): DiagramOptions => ({ ...DEFAULT_OPTIONS, showSchemaNames: new Set(tables.map((t) => t.schema)).size > 1 });
+
+export const headerHeight = ({ fontSize }: DiagramOptions) => Math.round(fontSize * 2.4);
+export const rowHeight = ({ fontSize }: DiagramOptions) => Math.round(fontSize * 1.65);
+
+const showsComment = (table: DiagramTable, options: DiagramOptions) => options.showObjectComments && !!table.comment;
+
+/** Where a table's rows start: under its header, and its comment line if it shows one. */
+export const rowsTop = (table: DiagramTable, options: DiagramOptions) => headerHeight(options) + (showsComment(table, options) ? rowHeight(options) : 0);
+
+/** What follows a column's type in its row. */
+export function rowSuffix(column: DiagramColumn, options: DiagramOptions) {
+  const notNull = options.showNotNull && column.notNull ? " NOT NULL" : "";
+  const comment = options.showFieldComments && column.comment ? `  ${column.comment}` : "";
+  return `${notNull}${comment}`;
+}
+
 /** A longer table scrolls inside its node. One table of 607 columns would otherwise set the height of the whole diagram. */
 export const MAX_ROWS = 40;
 const MAX_WIDTH = 420;
@@ -35,26 +53,30 @@ export interface Layout {
   hubEdges: Set<number>;
 }
 
-export type Measure = (text: string, bold: boolean) => number;
+export type Measure = (text: string, bold: boolean, fontSize: number) => number;
 export type RunLayout = (graph: ElkNode) => Promise<ElkNode>;
 
 export const isCapped = (table: DiagramTable) => table.columns.length > MAX_ROWS;
 
-export function tableBox(table: DiagramTable, measure: Measure): Box {
+export function tableBox(table: DiagramTable, measure: Measure, options = DEFAULT_OPTIONS): Box {
   const capped = isCapped(table);
+  const { fontSize } = options;
+  const scale = fontSize / DEFAULT_OPTIONS.fontSize;
+  const title = options.showSchemaNames ? `${table.schema}.${table.name}` : table.name;
   // Header: name, then the column count a capped table shows.
-  let width = measure(table.name, true) + (capped ? 90 : 40);
-  for (const c of table.columns) width = Math.max(width, measure(`${c.name}: ${c.dataType}`, false) + 44);
+  let width = measure(title, true, fontSize) + (capped ? 90 * scale : 40);
+  for (const c of table.columns) width = Math.max(width, measure(`${c.name}: ${c.dataType}${rowSuffix(c, options)}`, false, fontSize) + 44 * scale);
   return {
     width: Math.ceil(Math.min(width + (capped ? SCROLLBAR : 0), MAX_WIDTH)),
-    height: HEADER + Math.min(table.columns.length, MAX_ROWS) * ROW + 2,
+    height: rowsTop(table, options) + Math.min(table.columns.length, MAX_ROWS) * rowHeight(options) + 2,
   };
 }
 
 /** Where a column's line meets its table. A row in a capped table can scroll away, so its lines meet the header. */
-export function columnOffset(table: DiagramTable, column: string) {
-  if (isCapped(table)) return HEADER / 2;
-  return HEADER + Math.max(0, table.columns.findIndex((c) => c.name === column)) * ROW + ROW / 2;
+export function columnOffset(table: DiagramTable, column: string, options = DEFAULT_OPTIONS) {
+  if (isCapped(table)) return headerHeight(options) / 2;
+  const row = rowHeight(options);
+  return rowsTop(table, options) + Math.max(0, table.columns.findIndex((c) => c.name === column)) * row + row / 2;
 }
 
 /** Packs boxes into shelves near a 1.6 ratio, tallest first. Corners are returned by index. */
@@ -141,7 +163,7 @@ export function partition(tables: DiagramTable[], foreignKeys: DiagramForeignKey
 }
 
 /** ELK's graph for one cluster, with a fixed port where each foreign key meets its column. */
-export function clusterGraph(cluster: DiagramTable[], foreignKeys: DiagramForeignKey[], boxes: Map<number, Box>): ElkNode {
+export function clusterGraph(cluster: DiagramTable[], foreignKeys: DiagramForeignKey[], boxes: Map<number, Box>, options = DEFAULT_OPTIONS): ElkNode {
   const members = new Map(cluster.map((t) => [t.oid, t]));
   const ports = new Map<number, Map<string, NonNullable<ElkNode["ports"]>[number]>>(cluster.map((t) => [t.oid, new Map()]));
   const port = (oid: number, column: string, side: "EAST" | "WEST") => {
@@ -149,7 +171,7 @@ export function clusterGraph(cluster: DiagramTable[], foreignKeys: DiagramForeig
     ports.get(oid)!.set(id, {
       id,
       x: side === "EAST" ? boxes.get(oid)!.width : 0,
-      y: columnOffset(members.get(oid)!, column),
+      y: columnOffset(members.get(oid)!, column, options),
       width: 0,
       height: 0,
       layoutOptions: { "elk.port.side": side },
@@ -190,7 +212,7 @@ interface Block extends Box {
   routes: { id: number; points: Point[] }[];
 }
 
-export async function layoutDiagram(tables: DiagramTable[], foreignKeys: DiagramForeignKey[], boxes: Map<number, Box>, run: RunLayout): Promise<Layout> {
+export async function layoutDiagram(tables: DiagramTable[], foreignKeys: DiagramForeignKey[], boxes: Map<number, Box>, run: RunLayout, options = DEFAULT_OPTIONS): Promise<Layout> {
   const { hubs, clusters, loners, inner, hubEdges } = partition(tables, foreignKeys);
   const grid = (group: DiagramTable[], gap: number): Block => {
     const packed = shelves(group.map((t) => boxes.get(t.oid)!), gap);
@@ -199,7 +221,7 @@ export async function layoutDiagram(tables: DiagramTable[], foreignKeys: Diagram
 
   const blocks: Block[] = [];
   for (const cluster of clusters) {
-    const out = await run(clusterGraph(cluster, inner, boxes));
+    const out = await run(clusterGraph(cluster, inner, boxes, options));
     blocks.push({
       width: out.width ?? 0,
       height: out.height ?? 0,

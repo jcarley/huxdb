@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { compareStructure, foreignKeyKey, reportCount, resolveOids, tableKey } from "./diagramDrift";
 import type { DiagramCandidate, DiagramColumn, DiagramForeignKey, DiagramStructure, DiagramTable } from "./types";
 
-const column = (name: string, dataType = "integer", more: Partial<DiagramColumn> = {}): DiagramColumn => ({ name, dataType, notNull: false, primaryKey: false, ...more });
-const table = (oid: number, name: string, columns = [column("id")], schema = "public"): DiagramTable => ({ oid, schema, name, columns });
-const fk = (oid: number, name: string, childOid: number, parentOid: number, childColumns = ["a"], parentColumns = ["id"]): DiagramForeignKey => ({ oid, name, childOid, parentOid, childColumns, parentColumns, rolledUp: false });
+const column = (name: string, dataType = "integer", more: Partial<DiagramColumn> = {}): DiagramColumn => ({ name, dataType, notNull: false, primaryKey: false, comment: null, ...more });
+const table = (oid: number, name: string, columns = [column("id")], schema = "public"): DiagramTable => ({ oid, schema, name, comment: null, columns });
+const fk = (oid: number, name: string, childOid: number, parentOid: number, childColumns = ["a"], parentColumns = ["id"]): DiagramForeignKey => ({ oid, name, childOid, parentOid, childColumns, parentColumns, rolledUp: false, matchType: "s", onUpdate: "a", onDelete: "a" });
 const candidate = ({ oid, schema, name }: DiagramTable): DiagramCandidate => ({ oid, schema, name });
 const structure = (tables: DiagramTable[], foreignKeys: DiagramForeignKey[] = []): DiagramStructure => ({ tables, foreignKeys });
 const compare = (saved: DiagramStructure, current: DiagramStructure, extra: DiagramCandidate[] = [], known = saved.tables.map(tableKey)) =>

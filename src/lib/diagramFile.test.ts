@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 import { foreignKeyKey, tableKey } from "./diagramDrift";
 import { captureLayout, layoutSignature, restoreLayout } from "./diagramFile";
 import { toEdges, toNodes } from "./diagramFlow";
+import { DEFAULT_OPTIONS } from "./diagramLayout";
 import type { Box, Layout } from "./diagramLayout";
 import type { DiagramForeignKey, DiagramLayoutFile, DiagramStructure, DiagramTable } from "./types";
 
-const table = (oid: number): DiagramTable => ({ oid, schema: "public", name: `t${oid}`, columns: [{ name: "id", dataType: "integer", notNull: true, primaryKey: true }, { name: "a", dataType: "integer", notNull: false, primaryKey: false }] });
-const fk = (oid: number, childOid: number, parentOid: number): DiagramForeignKey => ({ oid, name: `fk${oid}`, childOid, parentOid, childColumns: ["a"], parentColumns: ["id"], rolledUp: false });
+const table = (oid: number): DiagramTable => ({ oid, schema: "public", name: `t${oid}`, comment: null, columns: [{ name: "id", dataType: "integer", notNull: true, primaryKey: true, comment: null }, { name: "a", dataType: "integer", notNull: false, primaryKey: false, comment: null }] });
+const fk = (oid: number, childOid: number, parentOid: number): DiagramForeignKey => ({ oid, name: `fk${oid}`, childOid, parentOid, childColumns: ["a"], parentColumns: ["id"], rolledUp: false, matchType: "s", onUpdate: "a", onDelete: "a" });
 const boxesOf = (s: DiagramStructure) => new Map<number, Box>(s.tables.map((t) => [t.oid, { width: 100, height: 50 }]));
 const empty: DiagramLayoutFile = { tables: {}, routes: {}, viewport: null };
 const onScreen = (s: DiagramStructure, layout: Layout) => ({ nodes: toNodes(s, layout, boxesOf(s)), edges: toEdges(s, layout) });
@@ -24,6 +25,20 @@ describe("layoutSignature", () => {
   it("changes when a table moves, or the object set changes", () => {
     expect(layoutSignature(nodes)).not.toBe(layoutSignature([{ ...nodes[0], position: { x: 5, y: 0 } }, nodes[1]]));
     expect(layoutSignature(nodes)).not.toBe(layoutSignature([nodes[0]]));
+  });
+});
+
+describe("options in the file", () => {
+  const s: DiagramStructure = { tables: [table(1)], foreignKeys: [] };
+  const layout: Layout = { positions: new Map([[1, { x: 0, y: 0 }]]), routes: new Map(), hubEdges: new Set() };
+  const nodes = toNodes(s, layout, boxesOf(s));
+
+  it("make a diagram differ, because they're saved with it", () => {
+    expect(layoutSignature(nodes, { ...DEFAULT_OPTIONS, fontSize: 14 })).not.toBe(layoutSignature(nodes, DEFAULT_OPTIONS));
+  });
+
+  it("are written with the layout", () => {
+    expect(captureLayout(s, nodes, [], null, null, DEFAULT_OPTIONS).options).toEqual(DEFAULT_OPTIONS);
   });
 });
 

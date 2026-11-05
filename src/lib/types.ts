@@ -664,12 +664,14 @@ export interface DiagramColumn {
   dataType: string;
   notNull: boolean;
   primaryKey: boolean;
+  comment: string | null;
 }
 
 export interface DiagramTable {
   oid: number;
   schema: string;
   name: string;
+  comment: string | null;
   columns: DiagramColumn[];
 }
 
@@ -682,6 +684,10 @@ export interface DiagramForeignKey {
   childColumns: string[];
   parentColumns: string[];
   rolledUp: boolean;
+  /** `pg_constraint`'s codes: see `foreignKeyRules`. */
+  matchType: string;
+  onUpdate: string;
+  onDelete: string;
 }
 
 export interface DiagramStructure {
@@ -709,6 +715,16 @@ export interface DiagramViewport {
   zoom: number;
 }
 
+/** How a diagram draws its tables. Saved with it. */
+export interface DiagramOptions {
+  showFieldComments: boolean;
+  showNotNull: boolean;
+  showObjectComments: boolean;
+  showSchemaNames: boolean;
+  fontSize: number;
+  blackAndWhite: boolean;
+}
+
 /** Stored apart from the schema, so a refresh changes the snapshot and leaves positions alone. */
 export interface DiagramLayoutFile {
   /** By `tableKey`. */
@@ -716,6 +732,8 @@ export interface DiagramLayoutFile {
   /** ELK's bend points, by `foreignKeyKey`. */
   routes: Record<string, { x: number; y: number }[]>;
   viewport: DiagramViewport | null;
+  /** Absent from diagrams saved before options existed. */
+  options?: DiagramOptions;
 }
 
 /** What a saved diagram's file holds beyond its name and database. */

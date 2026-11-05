@@ -48,6 +48,9 @@ export const diagramCandidates = (connectionId: string, database: string) =>
 export const diagramStructure = (connectionId: string, database: string, oids: number[]) =>
   invoke<DiagramStructure>("diagram_structure", { connectionId, database, oids });
 
+export const diagramRelated = (connectionId: string, database: string, oids: number[]) =>
+  invoke<number[]>("diagram_related", { connectionId, database, oids });
+
 export const listDiagrams = (connectionId: string) => invoke<DiagramInfo[]>("list_diagrams", { connectionId });
 
 export const diagramSummary = (connectionId: string) => invoke<DiagramSummary>("diagram_summary", { connectionId });

@@ -4,6 +4,7 @@ import { errorMessage } from "../../lib/api";
 import type { DiagramCandidate } from "../../lib/types";
 import { useDiagrams } from "../../stores/diagram";
 import type { DiagramTarget } from "../../stores/diagram";
+import { useSavedDiagrams } from "../../stores/savedDiagrams";
 import { useTabs } from "../../stores/tabs";
 import { Modal } from "../Modal";
 
@@ -13,7 +14,7 @@ const LARGE_DIAGRAM = 300;
 /** The New Diagram dialog. Mounted always, and renders only while the store has a picker open. */
 export function DiagramPicker() {
   const picker = useDiagrams((s) => s.picker);
-  return picker ? <Picker key={`${picker.connectionId}/${picker.database}/${picker.schema}`} target={picker} /> : null;
+  return picker ? <Picker key={`${picker.connectionId}/${picker.database}/${picker.schema}/${picker.tabId}`} target={picker} /> : null;
 }
 
 function SchemaCheckbox({ state, disabled, onChange }: { state: "all" | "some" | "none"; disabled: boolean; onChange: (checked: boolean) => void }) {
@@ -38,7 +39,7 @@ function Picker({ target }: { target: DiagramTarget }) {
       .then((list) => {
         if (!current) return;
         setCandidates(list);
-        setChosen(new Set(list.filter((c) => c.schema === target.schema).map((c) => c.oid)));
+        setChosen(new Set(target.ticked ?? list.filter((c) => c.schema === target.schema).map((c) => c.oid)));
       })
       .catch((err) => current && setError(errorMessage(err)));
     return () => {
@@ -66,13 +67,15 @@ function Picker({ target }: { target: DiagramTarget }) {
       return next;
     });
 
+  const { tabId } = target;
   const create = () => {
     closePicker();
-    useTabs.getState().openDiagram({ connectionId: target.connectionId, database: target.database, schema: "" }, [...chosen]);
+    if (tabId) void useDiagrams.getState().setTables(tabId, [...chosen]).catch((err) => useSavedDiagrams.setState({ error: errorMessage(err) }));
+    else useTabs.getState().openDiagram({ connectionId: target.connectionId, database: target.database, schema: "" }, [...chosen]);
   };
 
   return (
-    <Modal title={`New Diagram: ${target.database}`} onClose={closePicker} className="flex max-h-[80vh] max-w-xl flex-col">
+    <Modal title={tabId ? "Tables on This Diagram" : `New Diagram: ${target.database}`} onClose={closePicker} className="flex max-h-[80vh] max-w-xl flex-col">
       {error ? (
         <p className="py-2 whitespace-pre-wrap text-error select-text">{error}</p>
       ) : !candidates ? (
@@ -118,7 +121,7 @@ function Picker({ target }: { target: DiagramTarget }) {
           Cancel
         </button>
         <button type="button" className="btn btn-primary btn-sm" disabled={chosen.size === 0} onClick={create}>
-          Create
+          {tabId ? "Apply" : "Create"}
         </button>
       </div>
     </Modal>

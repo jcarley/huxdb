@@ -1,14 +1,18 @@
 import type { ElkExtendedEdge, ElkNode } from "elkjs/lib/elk-api";
 import { describe, expect, it } from "vitest";
-import { clusterGraph, columnOffset, HEADER, hubLimit, layoutDiagram, MAX_ROWS, partition, ROW, shelves, tableBox } from "./diagramLayout";
+import { clusterGraph, columnOffset, DEFAULT_OPTIONS, defaultOptions, headerHeight, hubLimit, layoutDiagram, MAX_ROWS, partition, rowHeight, rowsTop, rowSuffix, shelves, tableBox } from "./diagramLayout";
 import type { Box } from "./diagramLayout";
 import type { DiagramForeignKey, DiagramTable } from "./types";
+
+const HEADER = headerHeight(DEFAULT_OPTIONS);
+const ROW = rowHeight(DEFAULT_OPTIONS);
 
 const table = (oid: number, columns = 3): DiagramTable => ({
   oid,
   schema: "public",
   name: `t${oid}`,
-  columns: Array.from({ length: columns }, (_, i) => ({ name: `c${i}`, dataType: "integer", notNull: false, primaryKey: i === 0 })),
+  comment: null,
+  columns: Array.from({ length: columns }, (_, i) => ({ name: `c${i}`, dataType: "integer", notNull: false, primaryKey: i === 0, comment: null })),
 });
 let nextFk = 1000;
 const fk = (childOid: number, parentOid: number, child = "c1", parent = "c0"): DiagramForeignKey => ({
@@ -19,6 +23,9 @@ const fk = (childOid: number, parentOid: number, child = "c1", parent = "c0"): D
   childColumns: [child],
   parentColumns: [parent],
   rolledUp: false,
+  matchType: "s",
+  onUpdate: "a",
+  onDelete: "a",
 });
 const sizes = (tables: DiagramTable[]) => new Map<number, Box>(tables.map((t) => [t.oid, { width: 100, height: 80 }]));
 const measure = (text: string) => text.length * 6;
@@ -48,6 +55,46 @@ describe("tableBox", () => {
     const t = table(1);
     t.columns[0].name = "x".repeat(200);
     expect(tableBox(t, measure).width).toBe(420);
+  });
+});
+
+describe("options", () => {
+  const notNull = { ...table(1), columns: [{ name: "id", dataType: "integer", notNull: true, primaryKey: true, comment: "Key" }] };
+
+  it("default to the sizes a diagram has always had", () => {
+    expect([HEADER, ROW]).toEqual([26, 18]);
+  });
+
+  it("show schemas by default only for several schemas", () => {
+    expect(defaultOptions([table(1)]).showSchemaNames).toBe(false);
+    expect(defaultOptions([table(1), { ...table(2), schema: "other" }]).showSchemaNames).toBe(true);
+  });
+
+  it("widen a table for what its rows now show", () => {
+    const plain = tableBox(notNull, measure).width;
+    expect(tableBox(notNull, measure, { ...DEFAULT_OPTIONS, showNotNull: true }).width).toBe(plain + measure(" NOT NULL"));
+    expect(rowSuffix(notNull.columns[0], { ...DEFAULT_OPTIONS, showFieldComments: true })).toBe("  Key");
+    expect(rowSuffix({ ...notNull.columns[0], notNull: false }, { ...DEFAULT_OPTIONS, showNotNull: true })).toBe("");
+  });
+
+  it("grow rows with the font", () => {
+    const large = { ...DEFAULT_OPTIONS, fontSize: 16 };
+    expect(rowHeight(large)).toBeGreaterThan(ROW);
+    expect(tableBox(table(1), measure, large).height).toBe(headerHeight(large) + 3 * rowHeight(large) + 2);
+  });
+
+  it("move rows down for a shown comment, and only then", () => {
+    const commented = { ...table(1), comment: "Orders" };
+    const shown = { ...DEFAULT_OPTIONS, showObjectComments: true };
+    expect(rowsTop(table(1), shown)).toBe(HEADER);
+    expect(rowsTop(commented, shown)).toBe(HEADER + ROW);
+    expect(columnOffset(commented, "c0", shown)).toBe(HEADER + ROW + ROW / 2);
+    expect(tableBox(commented, measure, shown).height).toBe(tableBox(commented, measure).height + ROW);
+  });
+
+  it("measure the name with its schema when schemas show", () => {
+    const wide = tableBox({ ...table(1), schema: "a_very_long_schema_name_indeed" , columns: [] }, measure, { ...DEFAULT_OPTIONS, showSchemaNames: true }).width;
+    expect(wide).toBeGreaterThan(tableBox({ ...table(1), columns: [] }, measure).width);
   });
 });
 
