@@ -1,18 +1,19 @@
 // Typed wrappers around the Tauri commands in `src-tauri/src/connections/mod.rs`,
-// `src-tauri/src/explorer/mod.rs`, `src-tauri/src/designer/mod.rs`, `src-tauri/src/editor/mod.rs`
-// and `src-tauri/src/query/mod.rs`.
+// `src-tauri/src/explorer/mod.rs`, `src-tauri/src/designer/mod.rs`, `src-tauri/src/editor/mod.rs`,
+// `src-tauri/src/query/mod.rs` and `src-tauri/src/saved_queries/mod.rs`.
 // Commands reject with a plain error string.
 
 import { invoke } from "@tauri-apps/api/core";
 import type { Channel } from "@tauri-apps/api/core";
-import type { CompletionCatalog, ConnectionConfig, DataPage, DataSpec, DataTarget, EditBatch, QualifiedName, QueryEvent, QueryResult, QueryTarget, RunScope, SchemaObjects, TableDesign, TableInfo, TextRange, ViewDesign, ViewInfo } from "./types";
+import type { CompletionCatalog, ConnectionConfig, DataPage, DataSpec, DataTarget, EditBatch, ExternalFile, ExternalSql, QualifiedName, QueryEvent, QueryResult, QueryTarget, RunScope, SavedQuery, SavedQueryInfo, SavedQuerySummary, SchemaObjects, TableDesign, TableInfo, TextRange, ViewDesign, ViewInfo } from "./types";
 
 export const listConnections = () => invoke<ConnectionConfig[]>("list_connections");
 
 export const saveConnection = (config: ConnectionConfig) =>
   invoke<ConnectionConfig>("save_connection", { config });
 
-export const deleteConnection = (id: string) => invoke<void>("delete_connection", { id });
+/** `deleteQueries` also removes its saved queries; otherwise their files stay. */
+export const deleteConnection = (id: string, deleteQueries: boolean) => invoke<void>("delete_connection", { id, deleteQueries });
 
 /** Resolves to the server's `version()` string. */
 export const testConnection = (config: ConnectionConfig) =>
@@ -105,6 +106,44 @@ export const queryCancel = (tabId: string, runId: number) => invoke<void>("query
 export const queryEnd = (tabId: string, commit: boolean) => invoke<void>("query_end", { tabId, commit });
 
 export const queryClose = (tabId: string) => invoke<void>("query_close", { tabId });
+
+// Saved queries (`src-tauri/src/saved_queries/mod.rs`).
+
+export const listSavedQueries = (connectionId: string) => invoke<SavedQueryInfo[]>("list_saved_queries", { connectionId });
+
+export const savedQuerySummary = (connectionId: string) => invoke<SavedQuerySummary>("saved_query_summary", { connectionId });
+
+export const loadSavedQuery = (connectionId: string, id: string) => invoke<SavedQuery>("load_saved_query", { connectionId, id });
+
+/** Rejects if the name is taken. */
+export const createSavedQuery = (connectionId: string, name: string, database: string, schema: string, sql: string) =>
+  invoke<SavedQueryInfo>("create_saved_query", { connectionId, name, database, schema, sql });
+
+/** Starts the error of a save refused because the file changed on disk. Passing no stamp overwrites. */
+export const CHANGED_MARKER = "[changed] ";
+
+/** Saves over a query, keeping its name. */
+export const updateSavedQuery = (connectionId: string, id: string, database: string, schema: string, sql: string, expectedModifiedMs: number | null) =>
+  invoke<SavedQueryInfo>("update_saved_query", { connectionId, id, database, schema, sql, expectedModifiedMs });
+
+export const renameSavedQuery = (connectionId: string, id: string, name: string) =>
+  invoke<SavedQueryInfo>("rename_saved_query", { connectionId, id, name });
+
+export const duplicateSavedQuery = (connectionId: string, id: string) =>
+  invoke<SavedQueryInfo>("duplicate_saved_query", { connectionId, id });
+
+export const deleteSavedQuery = (connectionId: string, id: string) => invoke<void>("delete_saved_query", { connectionId, id });
+
+/** Shows the open dialog; null if cancelled. */
+export const openExternalSql = () => invoke<ExternalSql | null>("open_external_sql");
+
+/** Shows the save dialog and writes the file; null if cancelled. */
+export const saveExternalSqlAs = (suggestedName: string, sql: string) =>
+  invoke<ExternalFile | null>("save_external_sql_as", { suggestedName, sql });
+
+/** Writes a file that a dialog returned earlier; resolves to its new modification time. */
+export const writeExternalSql = (path: string, sql: string, expectedModifiedMs: number | null) =>
+  invoke<number | null>("write_external_sql", { path, sql, expectedModifiedMs });
 
 // Editor sessions (a tab's transaction and Stop) --------------------------------
 

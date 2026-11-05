@@ -4,12 +4,13 @@ import { closeCompletion } from "@codemirror/autocomplete";
 import { indentWithTab } from "@codemirror/commands";
 import { Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
-import { CirclePlay, OctagonX, Play, RefreshCw, Settings2, X } from "lucide-react";
+import { CirclePlay, FileInput, FileOutput, OctagonX, Play, RefreshCw, Save, SaveAll, Settings2, X } from "lucide-react";
 import * as api from "../../lib/api";
 import { catalogKey, useCompletionCatalog } from "../../stores/completionCatalog";
 import { useQueryEditor } from "../../stores/queryEditor";
 import type { QueryEditor as Editor } from "../../stores/queryEditor";
 import { useQueryPrefs } from "../../stores/queryPrefs";
+import { useSavedQueries } from "../../stores/savedQueries";
 import { useTabs } from "../../stores/tabs";
 import { SqlEditor } from "../SqlEditor";
 import { ToolButton } from "../ToolButton";
@@ -19,7 +20,7 @@ import { currentScope, statementHighlight } from "./statementHighlight";
 
 const MIN_PANEL = 80;
 
-/** Editor extensions for one tab: the highlight, completion, Tab to indent, and Cmd+Return to run. */
+/** Editor extensions for one tab: the highlight, completion, Tab to indent, Cmd+Return to run and Cmd+S to save. */
 function queryExtensions(id: string) {
   const { run } = useQueryEditor.getState();
   return [
@@ -42,6 +43,20 @@ function queryExtensions(id: string) {
           run: (view) => {
             closeCompletion(view);
             void run(id, { kind: "all" });
+            return true;
+          },
+        },
+        {
+          key: "Mod-s",
+          run: () => {
+            void useSavedQueries.getState().save(id);
+            return true;
+          },
+        },
+        {
+          key: "Shift-Mod-s",
+          run: () => {
+            useSavedQueries.getState().setPrompt({ kind: "save-as", tabId: id });
             return true;
           },
         },
@@ -112,26 +127,28 @@ function CompletionMenu({ connectionId, database }: { connectionId: string; data
         <Settings2 className="size-4 text-primary" strokeWidth={1.75} />
       </button>
       {/* Above CodeMirror's own layers: the gutters are at 200. */}
-      <div tabIndex={0} className="dropdown-content z-300 flex w-52 flex-col gap-2 rounded-box border border-base-300 bg-base-100 p-3 text-sm shadow-lg">
-        <label className="label cursor-pointer justify-start gap-2 text-base-content">
-          <input type="checkbox" className="checkbox checkbox-xs" checked={completion} onChange={(e) => setCompletion(e.target.checked)} />
-          Code completion
-        </label>
-        <label className="label cursor-pointer justify-start gap-2 text-base-content">
-          <input type="checkbox" className="checkbox checkbox-xs" checked={upperCaseKeywords} disabled={!completion} onChange={(e) => setUpperCaseKeywords(e.target.checked)} />
-          Upper-case keywords
-        </label>
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm justify-start font-normal"
-          title="Reads this database's schemas, tables and columns again"
-          disabled={!completion || entry?.loading}
-          onClick={() => useCompletionCatalog.getState().refresh(connectionId, database)}
-        >
-          <RefreshCw className={`size-4 text-primary ${entry?.loading ? "animate-spin" : ""}`} strokeWidth={1.75} />
-          Update Code Completion
-        </button>
-        {entry?.error && <p className="whitespace-pre-wrap text-xs text-error select-text">{entry.error}</p>}
+      <div tabIndex={0} className="dropdown-content z-300 w-52 rounded-box border border-base-300 bg-base-100 p-3 text-sm shadow-lg">
+        <div className="flex flex-col gap-2">
+          <label className="label cursor-pointer justify-start gap-2 text-base-content">
+            <input type="checkbox" className="checkbox checkbox-xs" checked={completion} onChange={(e) => setCompletion(e.target.checked)} />
+            Code completion
+          </label>
+          <label className="label cursor-pointer justify-start gap-2 text-base-content">
+            <input type="checkbox" className="checkbox checkbox-xs" checked={upperCaseKeywords} disabled={!completion} onChange={(e) => setUpperCaseKeywords(e.target.checked)} />
+            Upper-case keywords
+          </label>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm justify-start font-normal"
+            title="Reads this database's schemas, tables and columns again"
+            disabled={!completion || entry?.loading}
+            onClick={() => useCompletionCatalog.getState().refresh(connectionId, database)}
+          >
+            <RefreshCw className={`size-4 text-primary ${entry?.loading ? "animate-spin" : ""}`} strokeWidth={1.75} />
+            Update Code Completion
+          </button>
+          {entry?.error && <p className="whitespace-pre-wrap text-xs text-error select-text">{entry.error}</p>}
+        </div>
       </div>
     </div>
   );
@@ -139,12 +156,20 @@ function CompletionMenu({ connectionId, database }: { connectionId: string; data
 
 function Toolbar({ id, editor, view }: { id: string; editor: Editor; view: () => EditorView | null }) {
   const { run, stop, setContinueOnError } = useQueryEditor.getState();
+  const { save, setPrompt, saveAsExternal, openExternal } = useSavedQueries.getState();
+  const { connectionId, database, schema } = editor.tab;
   const running = editor.runId !== null;
   const blank = editor.sql.trim() === "";
 
   return (
     <div className="flex shrink-0 items-center gap-1 border-b border-base-300 px-2 py-1">
+      <ToolButton iconOnly icon={FileInput} label="Open External File" onClick={() => void openExternal({ connectionId, database, schema })} />
+      <ToolButton iconOnly icon={Save} label="Save" title="Save (⌘S)" onClick={() => void save(id)} />
+      <ToolButton iconOnly icon={SaveAll} label="Save As" title="Save As (⌘⇧S)" onClick={() => setPrompt({ kind: "save-as", tabId: id })} />
+      <ToolButton iconOnly icon={FileOutput} label="Save As External File" onClick={() => void saveAsExternal(id)} />
+      <div role="separator" aria-orientation="vertical" className="mx-1 h-5 w-px bg-base-300" />
       <ToolButton
+        iconOnly
         icon={Play}
         label="Run"
         title="Run the selection, or the current statement (⌘↩)"
@@ -154,8 +179,8 @@ function Toolbar({ id, editor, view }: { id: string; editor: Editor; view: () =>
           if (editorView) void run(id, currentScope(editorView));
         }}
       />
-      <ToolButton icon={CirclePlay} label="Run All" title="Run everything (⌘⇧↩)" disabled={running || blank} onClick={() => void run(id, { kind: "all" })} />
-      <ToolButton icon={OctagonX} label="Stop" disabled={!running} onClick={() => stop(id)} />
+      <ToolButton iconOnly icon={CirclePlay} label="Run All" title="Run everything (⌘⇧↩)" disabled={running || blank} onClick={() => void run(id, { kind: "all" })} />
+      <ToolButton iconOnly icon={OctagonX} label="Stop" disabled={!running} onClick={() => stop(id)} />
       <label className="label mx-2 cursor-pointer gap-1.5 text-sm text-base-content" title="Keep going after a statement fails">
         <input type="checkbox" className="checkbox checkbox-xs" checked={editor.continueOnError} onChange={(e) => setContinueOnError(id, e.target.checked)} />
         Continue on Error

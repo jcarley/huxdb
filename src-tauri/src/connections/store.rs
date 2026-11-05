@@ -1,9 +1,9 @@
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use super::model::ConnectionConfig;
+use crate::fsutil;
 
 /// Saved connections, kept in memory and mirrored to a JSON file.
 pub struct ConnectionStore {
@@ -89,30 +89,11 @@ impl ConnectionStore {
     }
 }
 
-/// Writes to a temp file in the same directory, then renames it over the target
-/// so a crash mid-write can't leave a truncated file. The file holds plaintext
-/// passwords, so on Unix it is created readable by the owner only.
+/// Saves the list. It holds plaintext passwords, which `write_atomic`'s owner-only
+/// default covers.
 fn write_atomic(path: &Path, list: &[ConnectionConfig]) -> Result<(), String> {
-    let fail = |e: std::io::Error| format!("Could not save connections: {e}");
-    let dir = path.parent().ok_or("Invalid connections file path.")?;
-    fs::create_dir_all(dir).map_err(fail)?;
-
     let json = serde_json::to_vec_pretty(list).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("json.tmp");
-
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&tmp).map_err(fail)?;
-    file.write_all(&json).map_err(fail)?;
-    file.sync_all().map_err(fail)?;
-    drop(file);
-
-    fs::rename(&tmp, path).map_err(fail)
+    fsutil::write_atomic(path, &json, None).map_err(|e| format!("Could not save connections: {e}"))
 }
 
 #[cfg(test)]

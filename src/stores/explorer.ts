@@ -15,13 +15,17 @@ export type TreeNodeRef =
   | { kind: "database"; connectionId: string; database: string }
   | { kind: "schema"; connectionId: string; database: string; schema: string }
   | { kind: "group"; connectionId: string; database: string; schema: string; group: ObjectGroup }
-  | { kind: "object"; connectionId: string; database: string; schema: string; group: ObjectGroup; name: string };
+  | { kind: "object"; connectionId: string; database: string; schema: string; group: ObjectGroup; name: string }
+  | { kind: "queries"; connectionId: string }
+  | { kind: "query"; connectionId: string; id: string };
 
 export type LoadState = { status: "loading" } | { status: "loaded" } | { status: "error"; error: string };
 
 // Separator that can't appear in PostgreSQL identifiers typed by humans in practice
 // (unlike "/" or "."), so keys never collide.
 const SEP = "\u001f";
+/** In the place a database's name goes, where "#queries" could be a real name. */
+const QUERIES = "\u001equeries";
 
 /** Stable string key for a node; a node's key is a prefix of all its descendants' keys. */
 export function nodeKey(node: TreeNodeRef): string {
@@ -36,6 +40,10 @@ export function nodeKey(node: TreeNodeRef): string {
       return [node.connectionId, node.database, node.schema, `#${node.group}`].join(SEP);
     case "object":
       return [node.connectionId, node.database, node.schema, `#${node.group}`, node.name].join(SEP);
+    case "queries":
+      return [node.connectionId, QUERIES].join(SEP);
+    case "query":
+      return [node.connectionId, QUERIES, node.id].join(SEP);
   }
 }
 
@@ -46,6 +54,10 @@ type GroupedRef = Extract<TreeNodeRef, { kind: "group" | "object" }>;
 export function isGroupSelection(node: TreeNodeRef | null, group: ObjectGroup): node is GroupedRef {
   return (node?.kind === "group" || node?.kind === "object") && node.group === group;
 }
+
+/** Whether `node` is a connection's Queries node or a query under it. */
+export const isQueriesSelection = (node: TreeNodeRef | null): node is Extract<TreeNodeRef, { kind: "queries" | "query" }> =>
+  node?.kind === "queries" || node?.kind === "query";
 
 const isWithin = (key: string, ancestor: string) => key === ancestor || key.startsWith(ancestor + SEP);
 const isBelow = (key: string, ancestor: string) => key.startsWith(ancestor + SEP);
@@ -84,6 +96,8 @@ interface ExplorerState {
   select: (node: TreeNodeRef) => void;
   /** Selects `group` in the selected node's schema (expanding the schema). No-op outside a schema. */
   showGroup: (group: ObjectGroup) => void;
+  /** Selects the Queries node of the selected node's connection. */
+  showQueries: () => void;
   /** Closes the connection's pools in the backend and forgets its tree state. */
   closeConnection: (connectionId: string) => Promise<void>;
   /** Drops all tree state for a connection (e.g. after it was edited or deleted). */
@@ -191,6 +205,14 @@ export const useExplorer = create<ExplorerState>((set, get) => {
       const { connectionId, database, schema } = node;
       get().expand({ kind: "schema", connectionId, database, schema });
       get().select({ kind: "group", connectionId, database, schema, group });
+    },
+
+    showQueries: () => {
+      const node = get().selected;
+      if (!node) return;
+      const { connectionId } = node;
+      get().expand({ kind: "connection", connectionId });
+      get().select({ kind: "queries", connectionId });
     },
 
     closeConnection: async (connectionId) => {

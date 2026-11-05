@@ -12,6 +12,7 @@ use tauri::State;
 use crate::editor::EditorSessions;
 use crate::explorer::sessions::SessionManager;
 use crate::query::QuerySessions;
+use crate::saved_queries::store::SavedQueryStore;
 
 #[tauri::command]
 pub fn list_connections(store: State<'_, ConnectionStore>) -> Vec<ConnectionConfig> {
@@ -41,12 +42,20 @@ pub fn delete_connection(
     sessions: State<'_, SessionManager>,
     editors: State<'_, EditorSessions>,
     queries: State<'_, QuerySessions>,
+    saved: State<'_, SavedQueryStore>,
     id: String,
+    delete_queries: bool,
 ) -> Result<(), String> {
     store.delete(&id)?;
     editors.close_connection(&id);
     queries.close_connection(&id);
     sessions.close(&id);
+    if delete_queries {
+        // The connection is gone either way, and files left behind harm nothing.
+        if let Err(err) = saved.delete_connection(&id) {
+            eprintln!("huxdb: could not delete the saved queries of connection {id}: {err}");
+        }
+    }
     Ok(())
 }
 

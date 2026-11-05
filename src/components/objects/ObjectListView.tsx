@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { RotateCw } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -6,6 +6,8 @@ import * as api from "../../lib/api";
 import { useExplorer } from "../../stores/explorer";
 import type { ObjectGroup } from "../../stores/explorer";
 import { useSchemaVersion } from "../../stores/tabs";
+import { useContextMenu } from "../tree/ContextMenu";
+import type { MenuItem } from "../tree/ContextMenu";
 import { ObjectToolbar } from "./ObjectToolbar";
 import type { ObjectAction } from "./ObjectToolbar";
 
@@ -22,32 +24,48 @@ export interface ObjectColumn<T> {
 }
 
 interface ObjectListViewProps<T extends { name: string }> {
-  connectionId: string;
-  database: string;
-  schema: string;
-  /** Tree group the rows belong to; clicking a row selects its object node there. */
-  group: ObjectGroup;
   /** Object selected in the tree; the list highlights it. */
   selectedName?: string;
   /** Icon shown before each name, matching the tree. */
   icon: LucideIcon;
-  load: (connectionId: string, database: string, schema: string) => Promise<T[]>;
+  /** Stable between renders; a new one reloads the list. */
+  load: () => Promise<T[]>;
+  /** A change reloads the list. */
+  reloadKey: unknown;
+  /** Clicking a row selects its node in the tree. */
+  onSelect: (row: T) => void;
+  /** The row's right-click menu. */
+  rowMenu?: (row: T) => MenuItem[];
   columns: ObjectColumn<T>[];
   actions: ObjectAction[];
   emptyText: string;
   /** Double-clicking a row opens its object. */
-  onOpen?: (name: string) => void;
+  onOpen?: (row: T) => void;
 }
 
-/** Navicat-style list of one kind of schema object, with that kind's actions above it. */
+/** What a schema's object list passes to `ObjectListView`: its rows come from
+ * the catalog, reload when a designer saves there, and select in the tree. */
+export function useSchemaList<T extends { name: string }>(
+  { connectionId, database, schema }: { connectionId: string; database: string; schema: string },
+  group: ObjectGroup,
+  fetch: (connectionId: string, database: string, schema: string) => Promise<T[]>,
+) {
+  return {
+    load: useCallback(() => fetch(connectionId, database, schema), [fetch, connectionId, database, schema]),
+    reloadKey: useSchemaVersion({ connectionId, database, schema }),
+    // The tree selection is the single source of truth, so the list and tree never disagree.
+    onSelect: (row: T) => useExplorer.getState().select({ kind: "object", connectionId, database, schema, group, name: row.name }),
+  };
+}
+
+/** Navicat-style list of one kind of object, with that kind's actions above it. */
 export function ObjectListView<T extends { name: string }>({
-  connectionId,
-  database,
-  schema,
-  group,
   selectedName,
   icon: Icon,
   load,
+  reloadKey,
+  onSelect,
+  rowMenu,
   columns,
   actions,
   emptyText,
@@ -55,25 +73,21 @@ export function ObjectListView<T extends { name: string }>({
 }: ObjectListViewProps<T>) {
   const [list, setList] = useState<ListState<T>>({ status: "loading" });
   const [reloadToken, setReloadToken] = useState(0);
-  // Bumped when a designer saves into this schema.
-  const schemaVersion = useSchemaVersion({ connectionId, database, schema });
+  const openMenu = useContextMenu((s) => s.open);
 
   useEffect(() => {
     let ignore = false;
     setList({ status: "loading" });
-    load(connectionId, database, schema).then(
+    load().then(
       (rows) => !ignore && setList({ status: "loaded", rows }),
       (err) => !ignore && setList({ status: "error", error: api.errorMessage(err) }),
     );
     return () => {
       ignore = true;
     };
-  }, [load, connectionId, database, schema, reloadToken, schemaVersion]);
+  }, [load, reloadToken, reloadKey]);
 
   const reload = () => setReloadToken((t) => t + 1);
-  // The tree selection is the single source of truth, so the list and tree never disagree.
-  const selectRow = (name: string) =>
-    useExplorer.getState().select({ kind: "object", connectionId, database, schema, group, name });
   const rows = list.status === "loaded" ? list.rows : [];
   const hasSelection = rows.some((r) => r.name === selectedName);
   const alignClass = (c: ObjectColumn<T>) => (c.align === "right" ? "text-right" : "");
@@ -113,8 +127,15 @@ export function ObjectListView<T extends { name: string }>({
                   key={row.name}
                   aria-selected={row.name === selectedName}
                   className={`cursor-default ${row.name === selectedName ? "bg-primary/15" : "hover:bg-base-300/60"}`}
-                  onClick={() => selectRow(row.name)}
-                  onDoubleClick={onOpen && (() => onOpen(row.name))}
+                  onClick={() => onSelect(row)}
+                  onDoubleClick={onOpen && (() => onOpen(row))}
+                  onContextMenu={
+                    rowMenu &&
+                    ((e) => {
+                      onSelect(row);
+                      openMenu(e, rowMenu(row));
+                    })
+                  }
                 >
                   <td className="font-medium">
                     <span className="flex items-center gap-1.5">

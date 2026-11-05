@@ -619,3 +619,35 @@ export type QueryEvent =
   | { event: "statement-started"; index: number; total: number; range: TextRange }
   | { event: "statement-finished"; outcome: StatementOutcome }
   | { event: "run-done"; tx: TxState; stopped: boolean; sessionLost: string | null };
+
+// Saved queries.
+
+/** Mirrors `SavedQueryInfo` in `saved_queries/store.rs`. */
+export interface SavedQueryInfo {
+  id: string;
+  name: string;
+  /** Empty for a file with no sidecar. */
+  database: string;
+  schema: string;
+  modifiedMs: number | null;
+  size: number;
+}
+
+export interface SavedQuery extends SavedQueryInfo {
+  sql: string;
+}
+
+export interface SavedQuerySummary {
+  count: number;
+  dir: string;
+}
+
+export interface ExternalFile {
+  path: string;
+  name: string;
+  modifiedMs: number | null;
+}
+
+export interface ExternalSql extends ExternalFile {
+  sql: string;
+}

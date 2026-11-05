@@ -1,8 +1,8 @@
-import { Eye, Plug, SquarePen, Table } from "lucide-react";
+import { Eye, FileCode, Plug, SquarePen, Table } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { newConnection } from "../lib/types";
 import { useConnections } from "../stores/connections";
-import { isGroupSelection, useExplorer } from "../stores/explorer";
+import { isGroupSelection, isQueriesSelection, useExplorer } from "../stores/explorer";
 import type { TreeNodeRef } from "../stores/explorer";
 import { useTabs } from "../stores/tabs";
 
@@ -36,10 +36,10 @@ function Separator() {
 
 /** A new query on the selected connection, in the selection's database and schema if it has them. */
 function openQuery(selected: TreeNodeRef) {
-  const config = useConnections.getState().connections.find((c) => c.id === selected.connectionId);
-  useTabs.getState().openQuery({
+  const { openQuery, defaultDatabase } = useTabs.getState();
+  openQuery({
     connectionId: selected.connectionId,
-    database: "database" in selected ? selected.database : config?.database || "postgres",
+    database: "database" in selected ? selected.database : defaultDatabase(selected.connectionId),
     schema: "schema" in selected ? selected.schema : "",
   });
 }
@@ -70,6 +70,7 @@ export function Toolbar() {
         active={isGroupSelection(selected, "views")}
         onClick={() => showGroup("views")}
       />
+      <ToolbarButton icon={FileCode} label="Queries" disabled={!selected} active={isQueriesSelection(selected)} onClick={() => useExplorer.getState().showQueries()} />
     </header>
   );
 }

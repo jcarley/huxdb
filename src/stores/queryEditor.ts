@@ -5,11 +5,13 @@
 // event, run-done, is what ends a run here: large messages can arrive after the
 // command returns, so its promise only reports the runs that never started.
 //
-// The tab's text isn't saved anywhere yet, so only a transaction makes it dirty.
+// `savedSql` is the text as last saved, so a tab is dirty with text that differs
+// from it or with an open transaction. Saving the text is `stores/savedQueries.ts`.
 
 import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
 import * as api from "../lib/api";
+import { normalizeText } from "../lib/queryFiles";
 import type { QueryEvent, RunScope, StatementOutcome, TxState } from "../lib/types";
 import { useCompletionCatalog } from "./completionCatalog";
 import type { DesignerTab } from "./tabs";
@@ -20,6 +22,10 @@ export type ResultView = number | "messages";
 export interface QueryEditor {
   tab: DesignerTab;
   sql: string;
+  /** The text as last saved or loaded; empty for a tab that was never saved. */
+  savedSql: string;
+  /** The file's modification time then, to notice a change made elsewhere. */
+  savedStamp: number | null;
   /** The run in progress. */
   runId: number | null;
   /** Statement being run and how many there are. */
@@ -41,7 +47,8 @@ export interface QueryEditor {
 interface QueryEditorState {
   editors: Record<string, QueryEditor>;
 
-  open: (tab: DesignerTab) => void;
+  /** `sql` is the text of a file being opened, which starts out saved. */
+  open: (tab: DesignerTab, sql?: string, stamp?: number | null) => void;
   dispose: (id: string) => void;
   setSql: (id: string, sql: string) => void;
   setContinueOnError: (id: string, value: boolean) => void;
@@ -51,12 +58,18 @@ interface QueryEditorState {
   run: (id: string, scope: RunScope) => Promise<void>;
   stop: (id: string) => void;
   /** For the close prompt: commits the open transaction. */
-  save: (id: string) => Promise<boolean>;
+  commit: (id: string) => Promise<boolean>;
+  /** `sql` is now what's on disk, as of `stamp`. */
+  markSaved: (id: string, sql: string, stamp: number | null) => void;
+  setError: (id: string, error: string) => void;
   dismissMessages: (id: string) => void;
 }
 
-/** Unsaved: a transaction is open, or failed and waiting for a rollback. */
-export const queryDirty = (q: QueryEditor | undefined) => !!q && q.tx !== "idle";
+/** The text differs from what's saved. */
+export const queryTextDirty = (q: QueryEditor | undefined) => !!q && q.sql !== q.savedSql;
+
+/** Unsaved: edited text, or a transaction that's open or failed and waiting for a rollback. */
+export const queryDirty = (q: QueryEditor | undefined) => queryTextDirty(q) || (!!q && q.tx !== "idle");
 
 export const isQueryDirty = (id: string) => queryDirty(useQueryEditor.getState().editors[id]);
 
@@ -112,11 +125,11 @@ export const useQueryEditor = create<QueryEditorState>((set, get) => {
   return {
     editors: {},
 
-    open: (tab) =>
+    open: (tab, sql = "", stamp = null) =>
       set((s) => ({
         editors: {
           ...s.editors,
-          [tab.id]: { tab, sql: "", runId: null, progress: null, tx: "idle", continueOnError: false, outcomes: [], view: "messages", error: null, notice: null, catalogStale: false },
+          [tab.id]: { tab, sql: normalizeText(sql), savedSql: normalizeText(sql), savedStamp: stamp, runId: null, progress: null, tx: "idle", continueOnError: false, outcomes: [], view: "messages", error: null, notice: null, catalogStale: false },
         },
       })),
 
@@ -155,7 +168,10 @@ export const useQueryEditor = create<QueryEditorState>((set, get) => {
       api.queryCancel(id, runId).catch((err) => update(id, { error: api.errorMessage(err) }));
     },
 
-    save: async (id) => {
+    markSaved: (id, savedSql, savedStamp) => update(id, { savedSql, savedStamp }),
+    setError: (id, error) => update(id, { error }),
+
+    commit: async (id) => {
       const q = get().editors[id];
       if (!q) return true;
       if (q.runId !== null) {

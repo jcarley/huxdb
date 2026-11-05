@@ -2,7 +2,7 @@ import { Eye, PencilRuler, Plus, Trash2, Upload } from "lucide-react";
 import * as api from "../../lib/api";
 import type { ViewInfo } from "../../lib/types";
 import { useTabs } from "../../stores/tabs";
-import { ObjectListView } from "./ObjectListView";
+import { ObjectListView, useSchemaList } from "./ObjectListView";
 import type { ObjectColumn } from "./ObjectListView";
 import type { ObjectAction } from "./ObjectToolbar";
 
@@ -38,10 +38,9 @@ interface ViewsViewProps {
 export function ViewsView(props: ViewsViewProps) {
   return (
     <ObjectListView
-      {...props}
-      group="views"
+      {...useSchemaList(props, "views", api.listViews)}
+      selectedName={props.selectedName}
       icon={Eye}
-      load={api.listViews}
       columns={COLUMNS}
       actions={actions(props)}
       emptyText="No views"

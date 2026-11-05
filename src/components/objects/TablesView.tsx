@@ -2,7 +2,7 @@ import { Import, PencilRuler, Plus, Table, Trash2, Upload } from "lucide-react";
 import * as api from "../../lib/api";
 import type { TableInfo } from "../../lib/types";
 import { useTabs } from "../../stores/tabs";
-import { ObjectListView } from "./ObjectListView";
+import { ObjectListView, useSchemaList } from "./ObjectListView";
 import type { ObjectColumn } from "./ObjectListView";
 import type { ObjectAction } from "./ObjectToolbar";
 
@@ -40,13 +40,12 @@ interface TablesViewProps {
 export function TablesView(props: TablesViewProps) {
   return (
     <ObjectListView
-      {...props}
-      group="tables"
+      {...useSchemaList(props, "tables", api.listTables)}
+      selectedName={props.selectedName}
       icon={Table}
-      load={api.listTables}
       columns={COLUMNS}
       actions={actions(props)}
-      onOpen={(name) => useTabs.getState().openDataEditor(props, name)}
+      onOpen={(table) => useTabs.getState().openDataEditor(props, table.name)}
       emptyText="No tables"
     />
   );

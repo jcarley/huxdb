@@ -3,7 +3,10 @@
 
 import { create } from "zustand";
 import { useCompletionCatalog } from "./completionCatalog";
+import { useConnections } from "./connections";
 import { nodeKey } from "./explorer";
+import { sameSource } from "../lib/queryFiles";
+import type { QuerySource } from "../lib/queryFiles";
 import { isDataDirty, useDataEditor } from "./dataEditor";
 import { isQueryDirty, useQueryEditor } from "./queryEditor";
 import { isDirty as isTableDirty, useTableDesigner } from "./tableDesigner";
@@ -25,6 +28,8 @@ export interface DesignerTab extends SchemaRef {
   kind: DesignerKind;
   /** Table or view being designed (or edited); null until a new one is first saved. */
   name: string | null;
+  /** A query tab's saved query or external file. */
+  source?: QuerySource;
 }
 
 interface TabsState {
@@ -45,6 +50,12 @@ interface TabsState {
   openDataEditor: (ref: SchemaRef, table: string) => void;
   /** Opens a new query tab. */
   openQuery: (ref: SchemaRef) => void;
+  /** Opens a saved query or an external file, or focuses its tab. */
+  openQuerySource: (ref: SchemaRef, name: string, source: QuerySource, sql: string, stamp: number | null) => void;
+  /** Focuses the tab of a saved query or external file; false if none is open. */
+  focusSource: (connectionId: string, source: QuerySource) => boolean;
+  /** The database a query tab starts in when nothing else says. */
+  defaultDatabase: (connectionId: string) => string;
   activate: (id: string | null) => void;
   /** Closes a clean tab; a dirty one prompts first. */
   requestClose: (id: string) => void;
@@ -53,6 +64,8 @@ interface TabsState {
   close: (id: string) => void;
   /** Points a tab at the object it now designs (after a new one's first save). */
   setName: (id: string, name: string) => void;
+  /** What a query tab saves to, and its name, after a Save As or a delete. */
+  setSource: (id: string, source: QuerySource | undefined, name: string) => void;
   /** A query tab changed database or schema. */
   setTarget: (id: string, database: string, schema: string) => void;
   /** Closes every tab of a connection (it was edited or deleted). */
@@ -131,7 +144,32 @@ export const useTabs = create<TabsState>((set, get) => ({
   openTableDesigner: (ref, table) => get().openDesigner("table", ref, table),
   openViewDesigner: (ref, view) => get().openDesigner("view", ref, view),
   openDataEditor: (ref, table) => get().openDesigner("data", ref, table),
-  openQuery: (ref) => get().openDesigner("query", ref, `Query ${++queryCount}`),
+
+  // Not `openDesigner`: a query's name doesn't identify it, so a new tab must not
+  // focus a saved query that happens to be called "Query 3".
+  openQuery: ({ connectionId, database, schema }) => {
+    const tab: DesignerTab = { id: crypto.randomUUID(), kind: "query", connectionId, database, schema, name: `Query ${++queryCount}` };
+    useQueryEditor.getState().open(tab);
+    set((s) => ({ tabs: [...s.tabs, tab], activeId: tab.id }));
+  },
+
+  openQuerySource: ({ connectionId, database, schema }, name, source, sql, stamp) => {
+    if (get().focusSource(connectionId, source)) return;
+    const tab: DesignerTab = { id: crypto.randomUUID(), kind: "query", connectionId, database, schema, name, source };
+    useQueryEditor.getState().open(tab, sql, stamp);
+    set((s) => ({ tabs: [...s.tabs, tab], activeId: tab.id }));
+  },
+
+  focusSource: (connectionId, source) => {
+    // An external file is the same file from any connection.
+    const tab = get().tabs.find((t) => sameSource(t.source, source) && (source.kind === "file" || t.connectionId === connectionId));
+    if (tab) set({ activeId: tab.id });
+    return !!tab;
+  },
+
+  defaultDatabase: (connectionId) =>
+    useConnections.getState().connections.find((c) => c.id === connectionId)?.database || "postgres",
+
 
   activate: (id) => set({ activeId: id }),
 
@@ -156,6 +194,7 @@ export const useTabs = create<TabsState>((set, get) => ({
   },
 
   setName: (id, name) => set((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, name } : t)) })),
+  setSource: (id, source, name) => set((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, source, name } : t)) })),
   setTarget: (id, database, schema) => set((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, database, schema } : t)) })),
 
   forgetConnection: (connectionId) => {

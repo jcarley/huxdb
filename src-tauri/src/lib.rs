@@ -2,21 +2,56 @@ mod connections;
 mod designer;
 mod editor;
 mod explorer;
+mod fsutil;
 mod query;
+mod saved_queries;
 
 use connections::store::ConnectionStore;
 use editor::EditorSessions;
 use explorer::sessions::SessionManager;
 use query::QuerySessions;
-use tauri::Manager;
+use saved_queries::ExternalFiles;
+use saved_queries::store::SavedQueryStore;
+use tauri::menu::Menu;
+use tauri::{AppHandle, Manager, Runtime};
+
+const QUIT_MENU_ID: &str = "quit";
+
+/// Tauri's default menu, except on macOS, where its Quit item ends the process
+/// without closing the window, so nothing would ask about unsaved tabs.
+fn app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    let menu = Menu::default(app)?;
+    #[cfg(target_os = "macos")]
+    if let Some(submenu) = menu.items()?.first().and_then(|item| item.as_submenu()) {
+        for item in submenu.items()? {
+            if let Some(quit) = item.as_predefined_menuitem().filter(|i| i.text().is_ok_and(|text| text.starts_with("Quit"))) {
+                submenu.remove(quit)?;
+                submenu.append(&tauri::menu::MenuItem::with_id(app, QUIT_MENU_ID, "Quit huxdb", true, Some("CmdOrCtrl+Q"))?)?;
+            }
+        }
+    }
+    Ok(menu)
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .menu(app_menu)
+        .on_menu_event(|app, event| {
+            if event.id() == QUIT_MENU_ID {
+                // Through the window, so the unsaved-tabs prompt gets its say.
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.close();
+                }
+            }
+        })
         .setup(|app| {
-            let path = app.path().app_config_dir()?.join("connections.json");
-            app.manage(ConnectionStore::load(path));
+            let config_dir = app.path().app_config_dir()?;
+            app.manage(ConnectionStore::load(config_dir.join("connections.json")));
+            app.manage(SavedQueryStore::new(config_dir.join("queries")));
+            app.manage(ExternalFiles::default());
             app.manage(SessionManager::default());
             app.manage(EditorSessions::default());
             app.manage(QuerySessions::default());
@@ -58,6 +93,17 @@ pub fn run() {
             query::query_cancel,
             query::query_end,
             query::query_close,
+            saved_queries::list_saved_queries,
+            saved_queries::saved_query_summary,
+            saved_queries::load_saved_query,
+            saved_queries::create_saved_query,
+            saved_queries::update_saved_query,
+            saved_queries::rename_saved_query,
+            saved_queries::duplicate_saved_query,
+            saved_queries::delete_saved_query,
+            saved_queries::open_external_sql,
+            saved_queries::save_external_sql_as,
+            saved_queries::write_external_sql,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

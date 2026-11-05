@@ -4,6 +4,7 @@ import { ConfirmCloseDialog } from "./components/ConfirmCloseDialog";
 import { ConfirmDeleteDialog } from "./components/ConfirmDeleteDialog";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { MainArea } from "./components/MainArea";
+import { SavedQueryDialogs } from "./components/SavedQueryDialogs";
 import { Sidebar } from "./components/Sidebar";
 import { Toolbar } from "./components/Toolbar";
 import { useConnections } from "./stores/connections";
@@ -40,6 +41,7 @@ function App() {
       <ConnectionDialog />
       <ConfirmDeleteDialog />
       <ConfirmCloseDialog />
+      <SavedQueryDialogs />
     </div>
   );
 }

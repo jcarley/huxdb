@@ -6,6 +6,7 @@ import { ConnectionIcon } from "../ConnectionIcon";
 import { useContextMenu } from "./ContextMenu";
 import type { MenuItem } from "./ContextMenu";
 import { DatabaseNode } from "./DatabaseNode";
+import { QueriesNode } from "./QueriesNode";
 import { TreeNode } from "./TreeNode";
 import { useTreeNode } from "./useTreeNode";
 
@@ -51,6 +52,7 @@ export function ConnectionNode({ connection }: { connection: ConnectionConfig })
       {databases?.map((database) => (
         <DatabaseNode key={database} connectionId={connectionId} database={database} />
       ))}
+      <QueriesNode connectionId={connectionId} />
     </TreeNode>
   );
 }
