@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { FormEvent } from "react";
+import type { SubmitEvent } from "react";
 import { Modal } from "../Modal";
 
 interface NameDialogProps {
@@ -18,7 +18,7 @@ export function NameDialog({ noun, initial, error, busy, onCancel, onSave }: Nam
   const [name, setName] = useState(initial);
   const title = `${noun[0].toUpperCase()}${noun.slice(1)} Name`;
 
-  const onSubmit = (e: FormEvent) => {
+  const onSubmit = (e: SubmitEvent) => {
     e.preventDefault();
     if (name.trim() && !busy) onSave(name.trim());
   };
