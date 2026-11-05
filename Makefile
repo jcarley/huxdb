@@ -1,4 +1,4 @@
-.PHONY: help up down status stop provision provision-check users users-env-check dev test
+.PHONY: help up down status stop dev build
 
 .DEFAULT_GOAL := help
 
@@ -17,8 +17,8 @@ status: ## Show the status of running services
 stop: ## Stop running services without removing them
 	@docker compose stop
 
-dev: ## starts the development server
+dev: ## Starts the development server
 	@npm run tauri dev
 
-build:
+build: ## Builds the application for release
 	@npm run tauri build

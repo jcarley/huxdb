@@ -68,6 +68,28 @@ pub struct CatalogSchema {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quoted: Option<String>,
     pub relations: Vec<CatalogRelation>,
+    pub functions: Vec<CatalogFunction>,
+}
+
+/// One overload. Aggregates and procedures count; trigger functions and those
+/// only the server can call (taking or returning `internal`) don't.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogFunction {
+    pub name: String,
+    /// See [`CatalogColumn::quoted`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quoted: Option<String>,
+    /// `pg_get_function_arguments`: names, types and defaults, as written.
+    pub arguments: String,
+    /// `pg_get_function_result`; none for a procedure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+    /// Input arguments without a default.
+    pub min_args: i32,
+    /// All input arguments, counting a variadic one once.
+    pub max_args: i32,
+    pub variadic: bool,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -115,6 +137,9 @@ type RelationRow = (i64, String, String, Option<String>, String);
 /// A column row: relation oid, name, `quoted`, type.
 type ColumnRow = (i64, String, Option<String>, String);
 
+/// A function row: schema, then the fields of [`CatalogFunction`].
+type FunctionRow = (String, String, Option<String>, String, Option<String>, i32, i32, bool);
+
 /// Hangs the rows off their schemas. Rows with no parent are dropped: a query
 /// can see an object the one before it didn't, and other sessions' temp schemas
 /// aren't listed.
@@ -123,6 +148,7 @@ fn assemble_catalog(
     schemas: Vec<(String, Option<String>)>,
     relations: Vec<RelationRow>,
     columns: Vec<ColumnRow>,
+    functions: Vec<FunctionRow>,
 ) -> CompletionCatalog {
     let mut by_relation: HashMap<i64, Vec<CatalogColumn>> = HashMap::new();
     for (oid, name, quoted, data_type) in columns {
@@ -137,18 +163,23 @@ fn assemble_catalog(
             columns: by_relation.remove(&oid).unwrap_or_default(),
         });
     }
+    let mut functions_by_schema: HashMap<String, Vec<CatalogFunction>> = HashMap::new();
+    for (schema, name, quoted, arguments, result, min_args, max_args, variadic) in functions {
+        functions_by_schema.entry(schema).or_default().push(CatalogFunction { name, quoted, arguments, result, min_args, max_args, variadic });
+    }
     let schemas = schemas
         .into_iter()
         .map(|(name, quoted)| {
             let relations = by_schema.remove(&name).unwrap_or_default();
-            CatalogSchema { name, quoted, relations }
+            let functions = functions_by_schema.remove(&name).unwrap_or_default();
+            CatalogSchema { name, quoted, relations, functions }
         })
         .collect();
     CompletionCatalog { search_path, schemas }
 }
 
-/// Schemas, relations and columns, in three reads through the pool, so it never
-/// touches a query tab's session. Skips TOAST and temp schemas, dropped columns
+/// Schemas, relations, columns and functions, in separate reads through the pool,
+/// so it never touches a query tab's session. Skips TOAST and temp schemas, dropped columns
 /// and system columns.
 pub async fn completion_catalog(pool: &PgPool) -> Result<CompletionCatalog, String> {
     let search_path = sqlx::query_scalar("SELECT current_schemas(true)::text[]").fetch_one(pool).await.map_err(err)?;
@@ -181,7 +212,21 @@ pub async fn completion_catalog(pool: &PgPool) -> Result<CompletionCatalog, Stri
     .fetch_all(pool)
     .await
     .map_err(err)?;
-    Ok(assemble_catalog(search_path, schemas, relations, columns))
+    // `prokind` needs PostgreSQL 11, older than the designer's baseline of 12.
+    let functions = sqlx::query_as(
+        "SELECT n.nspname::text, p.proname::text, NULLIF(quote_ident(p.proname), p.proname::text),
+                pg_get_function_arguments(p.oid), pg_get_function_result(p.oid),
+                (p.pronargs - p.pronargdefaults)::int4, p.pronargs::int4, p.provariadic <> 0
+         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+         WHERE p.prokind IN ('f', 'a', 'w', 'p')
+           AND p.prorettype NOT IN ('trigger'::regtype, 'event_trigger'::regtype, 'internal'::regtype)
+           AND NOT 'internal'::regtype = ANY (p.proargtypes::oid[]::regtype[])
+         ORDER BY p.proname, p.pronargs, p.oid",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(err)?;
+    Ok(assemble_catalog(search_path, schemas, relations, columns, functions))
 }
 
 fn err(e: sqlx::Error) -> String {
@@ -333,7 +378,13 @@ mod tests {
                 (4, "pg_temp_3".into(), "gone".into(), None, "r".into()),
             ],
             vec![(1, "id".into(), None, "integer".into()), (1, "order".into(), Some("\"order\"".into()), "text".into()), (9, "gone".into(), None, "text".into())],
+            vec![
+                ("public".into(), "f".into(), None, "a integer".into(), Some("integer".into()), 1, 1, false),
+                ("pg_temp_3".into(), "gone".into(), None, "".into(), None, 0, 0, false),
+            ],
         );
+        assert_eq!(catalog.schemas[1].functions[0].name, "f");
+        assert!(catalog.schemas[0].functions.is_empty());
         assert_eq!(catalog.schemas.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["Odd", "public"]);
         assert_eq!(catalog.schemas[0].relations[0].kind, RelationKind::MaterializedView);
         let users = &catalog.schemas[1].relations[0];
@@ -366,6 +417,9 @@ mod tests {
              ALTER TABLE \"Huxdb Catalog\".\"order\" DROP COLUMN gone;
              CREATE VIEW \"Huxdb Catalog\".plain_view AS SELECT 1 AS x;
              CREATE MATERIALIZED VIEW \"Huxdb Catalog\".a_matview AS SELECT 1 AS x;
+             CREATE FUNCTION \"Huxdb Catalog\".f(a int, b text DEFAULT 'x, y', VARIADIC c int[] DEFAULT '{}') RETURNS int LANGUAGE sql AS 'SELECT a';
+             CREATE PROCEDURE \"Huxdb Catalog\".p(a int) LANGUAGE sql AS 'SELECT 1';
+             CREATE FUNCTION \"Huxdb Catalog\".t() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NULL; END';
              CREATE TEMP TABLE huxdb_temp_catalog (a int);",
         )
         .execute(&pool)
@@ -380,6 +434,15 @@ mod tests {
         assert!(catalog.schemas.iter().any(|s| s.name == "pg_catalog" && s.relations.iter().any(|r| r.name == "pg_class" && !r.columns.is_empty())));
 
         let schema = catalog.schemas.iter().find(|s| s.name == "Huxdb Catalog").expect("the schema");
+        assert_eq!(schema.functions.len(), 2, "no trigger function");
+        let f = &schema.functions[0];
+        assert_eq!((f.name.as_str(), f.min_args, f.max_args, f.variadic), ("f", 1, 3, true));
+        assert_eq!(f.result.as_deref(), Some("integer"));
+        assert!(f.arguments.contains("DEFAULT 'x, y'"), "{}", f.arguments);
+        assert_eq!(schema.functions[1].result, None);
+        let functions = &catalog.schemas.iter().find(|s| s.name == "pg_catalog").unwrap().functions;
+        assert!(functions.iter().any(|f| f.name == "lower"));
+        assert!(functions.iter().all(|f| !f.arguments.contains("internal")));
         assert_eq!(schema.quoted.as_deref(), Some("\"Huxdb Catalog\""));
         let names: Vec<_> = schema.relations.iter().map(|r| (r.name.as_str(), r.kind, r.quoted.as_deref())).collect();
         assert_eq!(

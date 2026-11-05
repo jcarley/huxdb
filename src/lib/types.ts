@@ -570,10 +570,24 @@ export interface CatalogRelation {
   columns: CatalogColumn[];
 }
 
+/** One overload. */
+export interface CatalogFunction {
+  name: string;
+  quoted?: string;
+  /** Names, types and defaults, as `pg_get_function_arguments` writes them. */
+  arguments: string;
+  /** None for a procedure. */
+  result?: string;
+  minArgs: number;
+  maxArgs: number;
+  variadic: boolean;
+}
+
 export interface CatalogSchema {
   name: string;
   quoted?: string;
   relations: CatalogRelation[];
+  functions: CatalogFunction[];
 }
 
 /** What code completion knows about a database. */

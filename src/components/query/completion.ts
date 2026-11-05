@@ -1,12 +1,16 @@
-import { acceptCompletion, autocompletion, CompletionContext, ifNotIn } from "@codemirror/autocomplete";
+import { acceptCompletion, autocompletion, insertCompletionText, pickedCompletion } from "@codemirror/autocomplete";
 import type { Completion, CompletionSource } from "@codemirror/autocomplete";
-import { PostgreSQL, keywordCompletionSource, schemaCompletionSource } from "@codemirror/lang-sql";
-import type { SQLNamespace } from "@codemirror/lang-sql";
-import { syntaxTree } from "@codemirror/language";
+import { PostgreSQL, keywordCompletionSource } from "@codemirror/lang-sql";
+import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { Compartment, Prec } from "@codemirror/state";
-import type { ChangeSpec, Extension } from "@codemirror/state";
+import type { Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
-import type { CatalogRelation, CatalogSchema, CompletionCatalog, RelationKind } from "../../lib/types";
+import type { CatalogFunction, CatalogRelation, CatalogSchema, CompletionCatalog, RelationKind } from "../../lib/types";
+import { buildIndex, cteColumns, findRelation, sourceColumns } from "./catalogIndex";
+import type { CatalogIndex, KnownColumn } from "./catalogIndex";
+import { signatureHelp } from "./signatureHelp";
+import { cursorContext, findCte, inText, nameAtCursor, visibleCtes, visibleSources } from "./sqlScope";
+import type { CursorContext, NameAtCursor, Scope } from "./sqlScope";
 
 /** Holds completion, so settings and catalogs apply without rebuilding the editor. Per editor state, so tabs can share it. */
 export const completionCompartment = new Compartment();
@@ -30,99 +34,175 @@ export function keywordSource(upperCase: boolean): CompletionSource {
   };
 }
 
-/** Schemas whose relations resolve without a qualifier, in order. A tab's schema
- * becomes its session's `search_path`, with `public` after it (`apply_schema` in the
- * backend) and `pg_catalog` searched first, as PostgreSQL does when it isn't listed. */
-export function searchScope(catalog: CompletionCatalog, schema = ""): string[] {
-  return schema ? [...new Set(["pg_catalog", schema, "public"])] : catalog.searchPath;
-}
-
 const RELATION_TYPE: Record<RelationKind, string> = { table: "table", view: "view", "materialized-view": "matview" };
 
-/** `lang-sql` reads a `.` in a namespace key as a path. */
-const namespaceKey = (name: string) => name.replace(/\./g, "\\.");
+/** Ranks, against keywords at -1. Columns in scope come first, or the list gets
+ * worse as it gets bigger; PostgreSQL's own thousands of functions come last. */
+const RANK = { column: 6, outerColumn: 5, cte: 5, source: 4, relation: 3, userFunction: 2, schema: 1, systemFunction: -2, systemRelation: -3 };
 
-function relationNamespace(schema: CatalogSchema, relation: CatalogRelation) {
-  const self: Completion = {
-    label: relation.name,
-    type: RELATION_TYPE[relation.kind],
-    detail: schema.name,
-    apply: relation.quoted,
-    // There are many of these, and few people want them by default.
-    boost: schema.name === "pg_catalog" ? -1 : 0,
-  };
-  const children: Completion[] = relation.columns.map((c) => ({ label: c.name, type: "property", detail: c.dataType, apply: c.quoted }));
-  return { self, children };
+/** A name we only know as written, in a CTE or subquery's output. */
+const quoteIfNeeded = (name: string) => (/^[a-z_][a-z0-9_$]*$/.test(name) ? undefined : `"${name.replace(/"/g, '""')}"`);
+
+function columnOption(column: KnownColumn, boost: number, sourceName?: string): Completion {
+  const detail = [column.dataType, sourceName].filter(Boolean).join(" · ") || undefined;
+  return { label: column.name, type: "property", detail, boost, apply: column.quoted ?? quoteIfNeeded(column.name) };
 }
 
-/** Every schema with its relations, plus the relations in `scope` by bare name.
- * The first schema to have a name wins, as it does in PostgreSQL, which is why this
- * doesn't use `lang-sql`'s `defaultSchema`: that takes one schema. A relation named
- * like a schema hides it, again as it would in `name.column`. */
-export function catalogNamespace(catalog: CompletionCatalog, scope: string[]): SQLNamespace {
-  const relations = new Map(
-    catalog.schemas.map((s) => [s.name, s.relations.map((r) => [namespaceKey(r.name), relationNamespace(s, r)] as const)]),
-  );
-  const schemas = catalog.schemas.map((s) => {
-    const self: Completion = { label: s.name, type: "namespace", apply: s.quoted };
-    return [namespaceKey(s.name), { self, children: Object.fromEntries(relations.get(s.name) ?? []) }] as const;
-  });
-  const visible = [...scope].reverse().flatMap((name) => relations.get(name) ?? []);
-  return Object.fromEntries<SQLNamespace>([...schemas, ...visible]);
+function relationOption(schema: string, relation: CatalogRelation, boost = schema === "pg_catalog" ? RANK.systemRelation : RANK.relation): Completion {
+  return { label: relation.name, type: RELATION_TYPE[relation.kind], detail: schema, boost, apply: relation.quoted };
 }
 
-/** PostgreSQL folds unquoted names to lower case and `lang-sql` doesn't, so `FROM Users u`
- * wouldn't find `users`, and would find a table really called `"Users"`. This gives
- * the source the current statement as the server reads it. Offsets don't move:
- * only ASCII is folded, which is also all a UTF-8 server folds. */
-function foldIdentifiers(context: CompletionContext): CompletionContext {
-  const tree = syntaxTree(context.state);
-  let statement = tree.resolveInner(context.pos, -1);
-  while (statement.name !== "Statement" && statement.parent) statement = statement.parent;
-  if (statement.name !== "Statement") return context;
+const schemaOption = ({ name, quoted }: CatalogSchema): Completion => ({ label: name, type: "namespace", boost: RANK.schema, apply: quoted });
 
-  const changes: ChangeSpec[] = [];
-  tree.iterate({
-    from: statement.from,
-    to: statement.to,
-    enter: ({ name, from, to }) => {
-      if (name !== "Identifier") return;
-      const text = context.state.sliceDoc(from, to);
-      const insert = text.replace(/[A-Z]+/g, (upper) => upper.toLowerCase());
-      if (insert !== text) changes.push({ from, to, insert });
+/** One entry per name, however many overloads. Accepting it opens the call, unless one's already there. */
+function functionOption(schema: string, overloads: CatalogFunction[]): Completion {
+  const [first] = overloads;
+  const name = first.quoted ?? first.name;
+  return {
+    label: first.name,
+    type: "function",
+    detail: overloads.length > 1 ? `${overloads.length} overloads` : `(${first.arguments})`,
+    boost: schema === "pg_catalog" ? RANK.systemFunction : RANK.userFunction,
+    apply: (view, completion, from, to) => {
+      const open = view.state.sliceDoc(to, to + 1) === "(";
+      const insert = open ? name : `${name}(`;
+      view.dispatch({ ...insertCompletionText(view.state, insert, from, to), annotations: pickedCompletion.of(completion) });
     },
-  });
-  if (changes.length === 0) return context;
-  return new CompletionContext(context.state.update({ changes }).state, context.pos, context.explicit, context.view);
+  };
 }
 
-/** Schemas, relations and columns, with aliases from `lang-sql`. Builds its tables on
- * first use, so a hidden tab doesn't pay for each catalog that arrives. */
-export function catalogSource(catalog: CompletionCatalog, schema = ""): CompletionSource {
-  let source: CompletionSource | null = null;
-  const names: CompletionSource = (context) => {
-    source ??= schemaCompletionSource({ schema: catalogNamespace(catalog, searchScope(catalog, schema)), dialect: PostgreSQL });
-    return source(foldIdentifiers(context));
+const schemaFunctions = (index: CatalogIndex, schema: string) =>
+  [...(index.schemas.get(schema)?.functions.values() ?? [])].map((overloads) => functionOption(schema, overloads));
+
+/** Names resolve along the path, so the first schema with a name wins. */
+function scopedRelations(index: CatalogIndex): Completion[] {
+  const seen = new Map<string, Completion>();
+  for (const schema of index.scope) {
+    for (const relation of index.schemas.get(schema)?.relations.values() ?? []) {
+      if (!seen.has(relation.name)) seen.set(relation.name, relationOption(schema, relation));
+    }
+  }
+  return [...seen.values()];
+}
+
+function scopedFunctions(index: CatalogIndex): Completion[] {
+  const seen = new Map<string, Completion>();
+  for (const schema of index.scope) {
+    for (const option of schemaFunctions(index, schema)) if (!seen.has(option.label)) seen.set(option.label, option);
+  }
+  return [...seen.values()];
+}
+
+function tableOptions(index: CatalogIndex, scope: Scope | null): Completion[] {
+  const ctes = (scope ? visibleCtes(scope) : []).map((cte): Completion => ({ label: cte.name, type: "cte", detail: "CTE", boost: RANK.cte, apply: quoteIfNeeded(cte.name) }));
+  return [...ctes, ...scopedRelations(index), ...[...index.schemas.values()].map((s) => schemaOption(s.schema)), ...scopedFunctions(index)];
+}
+
+function columnOptions(index: CatalogIndex, { scope, clause }: CursorContext): Completion[] {
+  const visible = visibleSources(scope);
+  const options = visible.flatMap(({ source, scope: owner }) => {
+    const boost = owner === scope ? RANK.column : RANK.outerColumn;
+    const columns = sourceColumns(index, source, owner).map((column) => columnOption(column, boost, source.name ?? undefined));
+    const named: Completion[] = source.name ? [{ label: source.name, type: "constant", boost: RANK.source, apply: quoteIfNeeded(source.name) }] : [];
+    return [...columns, ...named];
+  });
+  if (clause === "sort") {
+    for (const item of scope.output) if ("name" in item) options.push(columnOption(item, RANK.column));
+  }
+  options.push(...scopedFunctions(index));
+  // Nothing in FROM yet, so a table to qualify a column with is still useful.
+  if (visible.length === 0) options.push(...scopedRelations(index), ...[...index.schemas.values()].map((s) => schemaOption(s.schema)));
+  return options;
+}
+
+/** After a `.`: an alias or table's columns, or a schema's objects. In a table's
+ * place the schema comes first; anywhere else a table hides a schema of its name. */
+function qualifiedOptions(index: CatalogIndex, path: string[], context: CursorContext | null): Completion[] | null {
+  const scope = context?.scope ?? null;
+  const schemaObjects = () => {
+    const schema = path.length === 1 ? index.schemas.get(path[0]) : undefined;
+    if (!schema) return null;
+    const relations = [...schema.relations.values()].map((r) => relationOption(path[0], r, RANK.relation));
+    return [...relations, ...schemaFunctions(index, path[0])];
   };
-  // Not quoted identifiers, which it completes. Ctrl+Space would otherwise list names in a string.
-  return ifNotIn(["String", "LineComment", "BlockComment"], names);
+  if (context?.clause === "table") {
+    const objects = schemaObjects();
+    if (objects) return objects;
+  }
+  if (scope) {
+    const visible = visibleSources(scope).find(({ source }) => {
+      if (path.length === 1) return source.name === path[0];
+      return source.kind === "table" && source.path.join("\0") === path.join("\0");
+    });
+    if (visible) return sourceColumns(index, visible.source, visible.scope).map((c) => columnOption(c, RANK.column));
+    const cte = path.length === 1 ? findCte(scope, path[0]) : null;
+    if (cte) return cteColumns(index, cte.cte).map((c) => columnOption(c, RANK.column));
+  }
+  const relation = findRelation(index, path);
+  if (relation) return relation.columns.map((c) => columnOption(c, RANK.column));
+  return schemaObjects();
+}
+
+function optionsFor(index: CatalogIndex, name: NameAtCursor, context: CursorContext | null): Completion[] | null {
+  if (name.path.length > 0) return qualifiedOptions(index, name.path, context);
+  switch (context?.clause ?? "none") {
+    case "table":
+      return tableOptions(index, context?.scope ?? null);
+    case "expression":
+    case "sort":
+      return columnOptions(index, context!);
+    case "insert-columns": {
+      const target = context!.scope.target;
+      return target ? sourceColumns(index, target, context!.scope).map((c) => columnOption(c, RANK.column)) : null;
+    }
+    case "other":
+      return null;
+    case "none":
+      return tableOptions(index, context?.scope ?? null);
+  }
+}
+
+const PARSE_BUDGET_MS = 20;
+const NAME = /^[\p{L}\p{N}_$]*$/u;
+const QUOTED_NAME = /^"?[^"]*"?$/;
+
+/** Everything the catalog and the cursor's scope know, ranked. Replaces `lang-sql`'s
+ * schema source: a CTE or subquery's columns can't live in its static namespace. */
+export function catalogSource(index: CatalogIndex): CompletionSource {
+  return (context) => {
+    const { state, pos } = context;
+    // Parsing lags behind a jump to the end of a long script.
+    const tree = ensureSyntaxTree(state, pos, PARSE_BUDGET_MS) ?? syntaxTree(state);
+    if (inText(tree, pos)) return null;
+    const slice = (from: number, to: number) => state.sliceDoc(from, to);
+    const name = nameAtCursor(tree, slice, pos);
+    if (name.empty && !context.explicit) return null;
+    const options = optionsFor(index, name, cursorContext(tree, slice, pos, name.from));
+    if (!options) return null;
+    if (!name.quoted) return { from: name.from, options, validFor: NAME };
+    const quoted = options.map((option) => ({ ...option, label: `"${option.label}"`, apply: undefined }));
+    return { from: name.from, to: state.sliceDoc(pos, pos + 1) === '"' ? pos + 1 : undefined, options: quoted, validFor: QUOTED_NAME };
+  };
 }
 
 const icons = EditorView.baseTheme({
   ".cm-completionIcon-table:after": { content: "'▦'" },
   ".cm-completionIcon-view:after": { content: "'◫'" },
   ".cm-completionIcon-matview:after": { content: "'◧'" },
+  ".cm-completionIcon-cte:after": { content: "'◇'" },
 });
 
 /** The completion list and its keys, or nothing when it's turned off. */
 export function completionExtension({ completion, upperCaseKeywords, catalog, schema }: CompletionSettings): Extension {
   if (!completion) return [];
   const sources = [keywordSource(upperCaseKeywords)];
-  if (catalog) sources.push(catalogSource(catalog, schema));
+  const index = catalog ? buildIndex(catalog, schema) : null;
+  if (index) sources.push(catalogSource(index));
   return [
     // `override` also keeps out the source `sql()` adds through language data.
     autocompletion({ override: sources }),
     icons,
+    index ? signatureHelp(index) : [],
     // Returns false with no list open, so Tab goes on to indent.
     Prec.highest(keymap.of([{ key: "Tab", run: acceptCompletion }])),
   ];
