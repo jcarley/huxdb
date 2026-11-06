@@ -37,6 +37,8 @@ export function FkLine({ id, source, target, sourceX, sourceY, targetX, targetY,
     const options = s.diagrams[tab]?.options;
     return options?.showRelationshipNames ? options.fontSize - 1 : 0;
   });
+  // The line's own colour, if any, by its constraint's key.
+  const color = useDiagrams((s) => (data ? s.diagrams[tab]?.colors.lines[data.key] : undefined));
   const self = source === target;
   const path = useMemo(() => {
     if (self) return selfLoop(sourceX, sourceY, targetY);
@@ -46,7 +48,7 @@ export function FkLine({ id, source, target, sourceX, sourceY, targetX, targetY,
   }, [data?.points, self, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition]);
   if (!data) return null;
 
-  const tone: Tone = selected ? "selected" : data.hub ? "hub" : "plain";
+  const tone: Tone = selected ? "selected" : color ?? (data.hub ? "hub" : "plain");
   return (
     <>
       <BaseEdge id={id} path={path} markerStart={markerUrl(tab, `child-${data.childEnd}`, tone)} markerEnd={markerUrl(tab, `parent-${data.parentEnd}`, tone)} style={{ ...lineStyle(tone), strokeDasharray: DASHES[data.kind] }} />

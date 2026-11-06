@@ -780,6 +780,34 @@ export interface DiagramLayoutFile {
   viewport: DiagramViewport | null;
   /** Absent from diagrams saved before options existed. */
   options?: DiagramOptions;
+  /** Absent from diagrams saved before labels and notes existed. */
+  annotations?: DiagramAnnotation[];
+  colors?: DiagramColors;
+}
+
+/** Theme colours a table or line can take, as daisyUI names them. */
+export type DiagramColor = "primary" | "secondary" | "accent" | "info" | "success" | "warning" | "error";
+
+/** Colours of objects and lines, keyed by `tableKey` and `foreignKeyKey`. */
+export interface DiagramColors {
+  objects: Record<string, DiagramColor>;
+  lines: Record<string, DiagramColor>;
+}
+
+/** A label or note drawn on the canvas. It lives only in the diagram file, never in the database. */
+export interface DiagramAnnotation {
+  id: string;
+  kind: "label" | "note";
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text: string;
+  fontSize: number;
+  bold: boolean;
+  italic: boolean;
+  color: DiagramColor | null;
+  z: number;
 }
 
 /** What a saved diagram's file holds beyond its name and database. */

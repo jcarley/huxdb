@@ -5,8 +5,10 @@ import type { Edge, Node } from "@xyflow/react";
 import { childEnd, lineKind, parentEnd } from "./diagramCardinality";
 import type { ChildEnd, LineKind, ParentEnd } from "./diagramCardinality";
 import { bounds, columnOffset, dependencyId, DEFAULT_OPTIONS, HEADER, placedAt, rowHeight } from "./diagramLayout";
-import type { Box, Layout, Point } from "./diagramLayout";
-import type { DiagramForeignKey, DiagramOptions, DiagramStructure, DiagramTable } from "./types";
+import type { Box, Layout, Measure, Point } from "./diagramLayout";
+import { foreignKeyKey } from "./diagramDrift";
+import { annotationBox, annotationLines, isAnnotationId } from "./diagramAnnotations";
+import type { DiagramAnnotation, DiagramForeignKey, DiagramOptions, DiagramStructure, DiagramTable } from "./types";
 
 export interface TableHandle {
   id: string;
@@ -27,6 +29,8 @@ export interface FkData extends Record<string, unknown> {
   /** ELK's bend points. Absent once either table has moved, or for a line that never had any. */
   points?: Point[];
   hub: boolean;
+  /** `foreignKeyKey`, which a line's colour is saved under. */
+  key: string;
   name: string;
   parentEnd: ParentEnd;
   childEnd: ChildEnd;
@@ -39,10 +43,58 @@ export interface DependencyData extends Record<string, unknown> {
   hub: boolean;
 }
 
+export interface AnnotationData extends Record<string, unknown> {
+  annotation: DiagramAnnotation;
+  /** Wrapped once here, so the node and its size agree. */
+  lines: string[];
+}
+
 export type TableNode = Node<TableData, "table">;
+export type AnnotationNode = Node<AnnotationData, "label" | "note">;
+export type DiagramNode = TableNode | AnnotationNode;
 export type FkEdge = Edge<FkData, "fk">;
 export type DependencyEdge = Edge<DependencyData, "dependency">;
 export type DiagramEdge = FkEdge | DependencyEdge;
+
+export const isAnnotationNode = (n: DiagramNode): n is AnnotationNode => isAnnotationId(n.id);
+
+/** Labels and notes as nodes. They have no handles: nothing connects to them. */
+export function toAnnotationNodes(list: DiagramAnnotation[], measure: Measure, selected?: Set<string>): AnnotationNode[] {
+  return list.map((annotation) => {
+    const box = annotationBox(annotation, measure);
+    return {
+      id: annotation.id,
+      type: annotation.kind,
+      position: { x: annotation.x, y: annotation.y },
+      zIndex: annotation.z,
+      width: box.width,
+      height: box.height,
+      selected: selected?.has(annotation.id),
+      data: { annotation, lines: annotationLines(annotation, measure) },
+    };
+  });
+}
+
+/**
+ * The list with places taken from the nodes, and a note's size only for `resized` ids: a node's
+ * height may have grown for its text, which isn't the height the user set. It's `list` itself when nothing moved.
+ */
+export function syncAnnotations(list: DiagramAnnotation[], nodes: DiagramNode[], resized: Set<string> = new Set()): DiagramAnnotation[] {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  let changed = false;
+  const next = list.map((a) => {
+    const node = byId.get(a.id);
+    if (!node) return a;
+    // A label's size comes from its text, so only a note's is the user's.
+    const sized = a.kind === "note" && resized.has(a.id);
+    const width = sized ? (node.width ?? a.width) : a.width;
+    const height = sized ? (node.height ?? a.height) : a.height;
+    if (node.position.x === a.x && node.position.y === a.y && width === a.width && height === a.height) return a;
+    changed = true;
+    return { ...a, x: node.position.x, y: node.position.y, width, height };
+  });
+  return changed ? next : list;
+}
 
 /** A view's line leaves its right side and enters its source's left, both at the header. */
 export const DEPENDENCY_OUT = "dep-out";
@@ -81,7 +133,9 @@ export function toNodes({ tables, foreignKeys, dependencies = [] }: DiagramStruc
   });
 }
 
-export function toEdges({ foreignKeys, dependencies = [] }: DiagramStructure, layout: Layout): DiagramEdge[] {
+export function toEdges(structure: DiagramStructure, layout: Layout): DiagramEdge[] {
+  const { foreignKeys, dependencies = [] } = structure;
+  const tables = new Map(structure.tables.map((t) => [t.oid, t]));
   const fkEdges = foreignKeys.map((fk): FkEdge => {
     const hub = layout.hubEdges.has(String(fk.oid));
     return {
@@ -92,7 +146,7 @@ export function toEdges({ foreignKeys, dependencies = [] }: DiagramStructure, la
       sourceHandle: childHandle(fk),
       targetHandle: parentHandle(fk),
       hidden: hub,
-      data: { points: fk.childOid === fk.parentOid ? undefined : layout.routes.get(String(fk.oid)), hub, name: fk.name, parentEnd: parentEnd(fk), childEnd: childEnd(fk), kind: lineKind(fk) },
+      data: { points: fk.childOid === fk.parentOid ? undefined : layout.routes.get(String(fk.oid)), hub, key: foreignKeyKey(fk, tables.get(fk.childOid) ?? { schema: "", name: "" }), name: fk.name, parentEnd: parentEnd(fk), childEnd: childEnd(fk), kind: lineKind(fk) },
     };
   });
   const dependencyEdges = dependencies.map((d): DependencyEdge => {
@@ -123,11 +177,12 @@ export const foreignKeyRule = (code: string) => RULES[code] ?? code;
 export const matchLabel = (code: string) => (code === "f" ? "Full" : code === "p" ? "Partial" : "Simple");
 
 /** Tables in their current places, redrawn for new options. Sizes change, positions don't. */
-export function reshapeNodes(nodes: TableNode[], structure: DiagramStructure, boxes: Map<number, Box>, options: DiagramOptions): TableNode[] {
-  const positions = new Map(nodes.map((n) => [Number(n.id), n.position]));
+export function reshapeNodes(nodes: DiagramNode[], structure: DiagramStructure, boxes: Map<number, Box>, options: DiagramOptions): DiagramNode[] {
+  const tables = nodes.filter((n): n is TableNode => !isAnnotationNode(n));
+  const positions = new Map(tables.map((n) => [Number(n.id), n.position]));
   const redrawn = toNodes(structure, { positions, routes: new Map(), hubEdges: new Set() }, boxes, options);
-  const selected = new Set(nodes.flatMap((n) => (n.selected ? [n.id] : [])));
-  return redrawn.map((n) => (selected.has(n.id) ? { ...n, selected: true } : n));
+  const selected = new Set(tables.flatMap((n) => (n.selected ? [n.id] : [])));
+  return [...redrawn.map((n) => (selected.has(n.id) ? { ...n, selected: true } : n)), ...nodes.filter(isAnnotationNode)];
 }
 
 /** The cast is because spreading a union's `data` loses which kind it was. */
@@ -140,12 +195,12 @@ export interface Arrangement {
   routes: Map<string, Point[] | undefined>;
 }
 
-export const currentArrangement = (nodes: TableNode[], edges: DiagramEdge[]): Arrangement => ({
-  positions: new Map(nodes.map((n) => [n.id, n.position])),
+export const currentArrangement = (nodes: DiagramNode[], edges: DiagramEdge[]): Arrangement => ({
+  positions: new Map(nodes.filter((n) => !isAnnotationNode(n)).map((n) => [n.id, n.position])),
   routes: new Map(edges.map((e) => [e.id, e.data?.points])),
 });
 
-export function applyArrangement(nodes: TableNode[], edges: DiagramEdge[], { positions, routes }: Arrangement) {
+export function applyArrangement(nodes: DiagramNode[], edges: DiagramEdge[], { positions, routes }: Arrangement) {
   return {
     nodes: nodes.map((n) => {
       const position = positions.get(n.id);
@@ -159,7 +214,7 @@ export function applyArrangement(nodes: TableNode[], edges: DiagramEdge[], { pos
  * A layout of the selected tables alone, moved back to where they were. A line leaving the
  * selection loses its route, as it would if its table were dragged.
  */
-export function selectionArrangement(layout: Layout, nodes: TableNode[], edges: DiagramEdge[], chosen: Set<string>, boxes: Map<number, Box>): Arrangement {
+export function selectionArrangement(layout: Layout, nodes: DiagramNode[], edges: DiagramEdge[], chosen: Set<string>, boxes: Map<number, Box>): Arrangement {
   const current = nodes.flatMap((n) => (chosen.has(n.id) ? [[Number(n.id), n.position] as [number, Point]] : []));
   const { positions, routes } = placedAt(layout, boxes, bounds(current, boxes));
   return {

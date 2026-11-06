@@ -1,11 +1,14 @@
 import { KeyRound, Link2, LoaderCircle } from "lucide-react";
 import { relationshipFacts, relationshipNotes } from "../../lib/diagramCardinality";
+import { ANNOTATION_FONT_SIZES, isAnnotationId } from "../../lib/diagramAnnotations";
 import { foreignKeyRule, matchLabel } from "../../lib/diagramFlow";
-import { objectKind, objectLabel } from "../../lib/diagramDrift";
+import { foreignKeyKey, objectKind, objectLabel, tableKey } from "../../lib/diagramDrift";
 import { dependencyId } from "../../lib/diagramLayout";
 import { EXPRESSION_NOTE, FUNCTION_NOTE, sourceLabel } from "../../lib/diagramTrace";
-import type { DiagramForeignKey, DiagramOptions, DiagramTable } from "../../lib/types";
+import type { DiagramAnnotation, DiagramColor, DiagramForeignKey, DiagramOptions, DiagramTable } from "../../lib/types";
 import { useDiagrams } from "../../stores/diagram";
+import { ColorPicker } from "./ColorPicker";
+import { sharedColor } from "./colorStyles";
 
 const FONT_SIZES = [9, 10, 11, 12, 13, 14, 16];
 
@@ -59,6 +62,81 @@ function TraceStatus({ id, oid }: { id: string; oid: number }) {
   return <LoaderCircle className="mt-2 size-4 animate-spin text-base-content/50" aria-label="Reading sources" />;
 }
 
+/** The colour of one table, or of a selection if they all share one. */
+function ObjectColor({ id, nodes }: { id: string; nodes: string[] }) {
+  const value = useDiagrams((s) => {
+    const d = s.diagrams[id];
+    const keys = (d?.structure?.tables ?? []).filter((t) => nodes.includes(String(t.oid))).map(tableKey);
+    return sharedColor(keys.map((k) => d?.colors.objects[k] ?? null));
+  });
+  return (
+    <div className="mt-2 text-xs">
+      <div className="mb-1 text-base-content/60">Colour</div>
+      <ColorPicker allowNone value={value === "mixed" ? null : value} mixed={value === "mixed"} onChange={(color) => useDiagrams.getState().setObjectColor(id, nodes, color)} />
+    </div>
+  );
+}
+
+function LineColor({ id, fk }: { id: string; fk: DiagramForeignKey }) {
+  const value = useDiagrams((s) => {
+    const d = s.diagrams[id];
+    const child = d?.structure?.tables.find((t) => t.oid === fk.childOid);
+    return child ? (d?.colors.lines[foreignKeyKey(fk, child)] ?? null) : null;
+  });
+  return (
+    <div className="mt-2 text-xs">
+      <div className="mb-1 text-base-content/60">Colour</div>
+      <ColorPicker allowNone value={value} onChange={(color) => useDiagrams.getState().setLineColor(id, String(fk.oid), color)} />
+    </div>
+  );
+}
+
+function AnnotationProperties({ id, annotation: a }: { id: string; annotation: DiagramAnnotation }) {
+  const { updateAnnotation, bringToFront, sendToBack, deleteAnnotations } = useDiagrams.getState();
+  const note = a.kind === "note";
+  return (
+    <div className="p-2 text-sm">
+      <h3 className="mb-2 font-semibold">{note ? "Note" : "Label"}</h3>
+      <label className="mb-2 flex items-center justify-between gap-2">
+        Font size
+        <select className="select select-xs w-16" value={a.fontSize} onChange={(e) => updateAnnotation(id, a.id, { fontSize: Number(e.target.value) })}>
+          {ANNOTATION_FONT_SIZES.map((size) => (
+            <option key={size} value={size}>
+              {size}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="flex items-center gap-2 py-0.5">
+        <input type="checkbox" className="checkbox checkbox-xs" checked={a.bold} onChange={(e) => updateAnnotation(id, a.id, { bold: e.target.checked })} />
+        Bold
+      </label>
+      <label className="flex items-center gap-2 py-0.5">
+        <input type="checkbox" className="checkbox checkbox-xs" checked={a.italic} onChange={(e) => updateAnnotation(id, a.id, { italic: e.target.checked })} />
+        Italic
+      </label>
+      {note && (
+        <div className="mt-2 text-xs">
+          <div className="mb-1 text-base-content/60">Colour</div>
+          <ColorPicker allowNone value={a.color} onChange={(color: DiagramColor | null) => updateAnnotation(id, a.id, { color })} />
+        </div>
+      )}
+      <div className="mt-3 flex flex-wrap gap-1">
+        <button type="button" className="btn btn-xs" onClick={() => bringToFront(id, [a.id])}>
+          Bring to Front
+        </button>
+        <button type="button" className="btn btn-xs" onClick={() => sendToBack(id, [a.id])}>
+          Send to Back
+        </button>
+        <button type="button" className="btn btn-xs" onClick={() => deleteAnnotations(id, [a.id])}>
+          Delete
+        </button>
+      </div>
+      <p className="mt-3 text-xs text-base-content/60">Saved with the diagram. It doesn&apos;t change the database.</p>
+    </div>
+  );
+}
+
 function TableProperties({ id, table, foreignKeys, showSchema }: { id: string; table: DiagramTable; foreignKeys: DiagramForeignKey[]; showSchema: boolean }) {
   const kind = objectKind(table);
   const routine = kind === "function" || kind === "procedure";
@@ -86,6 +164,7 @@ function TableProperties({ id, table, foreignKeys, showSchema }: { id: string; t
           </li>
         ))}
       </ul>
+      <ObjectColor id={id} nodes={[String(table.oid)]} />
       {view && <TraceStatus id={id} oid={table.oid} />}
       {routine && <p className="mt-2 text-xs text-base-content/60">{FUNCTION_NOTE}</p>}
     </div>
@@ -103,7 +182,7 @@ function DependencyProperties({ view, source }: { view?: DiagramTable; source?: 
   );
 }
 
-function ForeignKeyProperties({ fk, child, parent }: { fk: DiagramForeignKey; child?: DiagramTable; parent?: DiagramTable }) {
+function ForeignKeyProperties({ id, fk, child, parent }: { id: string; fk: DiagramForeignKey; child?: DiagramTable; parent?: DiagramTable }) {
   const rows: [string, string][] = [
     ["From", `${child?.name}(${fk.childColumns.join(", ")})`],
     ["To", `${parent?.name}(${fk.parentColumns.join(", ")})`],
@@ -134,6 +213,7 @@ function ForeignKeyProperties({ fk, child, parent }: { fk: DiagramForeignKey; ch
           <li key={note}>{note}</li>
         ))}
       </ul>
+      <LineColor id={id} fk={fk} />
     </div>
   );
 }
@@ -143,23 +223,31 @@ export function PropertiesPane({ id }: { id: string }) {
   const options = useDiagrams((s) => s.diagrams[id]?.options);
   const structure = useDiagrams((s) => s.diagrams[id]?.structure);
   const selection = useDiagrams((s) => s.diagrams[id]?.selection);
+  const annotation = useDiagrams((s) => (selection?.nodes.length === 1 && isAnnotationId(selection?.nodes[0]) ? s.diagrams[id]?.annotations.find((a) => a.id === selection?.nodes[0]) : undefined));
   if (!options || !structure || !selection) return null;
 
   const table = (oid: number) => structure.tables.find((t) => t.oid === oid);
   const fk = selection.foreignKey;
   const dependency = selection.edge ? structure.dependencies?.find((d) => dependencyId(d) === selection.edge) : undefined;
-  const selected = selection.nodes.length === 1 ? table(Number(selection.nodes[0])) : undefined;
+  // An annotation's id isn't a number, so it must be answered before the table lookup.
+  const selected = selection.nodes.length === 1 && !annotation ? table(Number(selection.nodes[0])) : undefined;
+  const objects = selection.nodes.filter((n) => !isAnnotationId(n));
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto" aria-label="Properties">
       {fk ? (
-        <ForeignKeyProperties fk={fk} child={table(fk.childOid)} parent={table(fk.parentOid)} />
+        <ForeignKeyProperties id={id} fk={fk} child={table(fk.childOid)} parent={table(fk.parentOid)} />
       ) : dependency ? (
         <DependencyProperties view={table(dependency.dependentOid)} source={table(dependency.sourceOid)} />
+      ) : annotation ? (
+        <AnnotationProperties id={id} annotation={annotation} />
       ) : selected ? (
         <TableProperties id={id} table={selected} foreignKeys={structure.foreignKeys} showSchema={options.showSchemaNames} />
       ) : selection.nodes.length > 1 ? (
-        <p className="p-2 text-sm text-base-content/60">{selection.nodes.length} objects selected</p>
+        <div className="p-2">
+          <p className="text-sm text-base-content/60">{selection.nodes.length} objects selected</p>
+          {objects.length > 0 && <ObjectColor id={id} nodes={objects} />}
+        </div>
       ) : (
         <DiagramProperties id={id} options={options} />
       )}

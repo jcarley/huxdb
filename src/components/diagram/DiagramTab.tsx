@@ -1,19 +1,23 @@
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/600.css";
-import { applyEdgeChanges, applyNodeChanges, Background, ReactFlow, ReactFlowProvider, useNodesInitialized, useReactFlow, useUpdateNodeInternals } from "@xyflow/react";
+import { applyEdgeChanges, applyNodeChanges, Background, ReactFlow, ReactFlowProvider, useNodesInitialized, useReactFlow, useStoreApi, useUpdateNodeInternals } from "@xyflow/react";
 import type { EdgeChange, EdgeMouseHandler, NodeChange, NodeMouseHandler, OnSelectionChangeParams, Viewport } from "@xyflow/react";
-import { ListPlus, Network, RefreshCw, Save, SaveAll, Undo2 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { ListPlus, Network, RefreshCw, Save, SaveAll, StickyNote, Type, Undo2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
+import { fitNote, isAnnotationId, objectNodes, PASTE_OFFSET } from "../../lib/diagramAnnotations";
+import { measureText } from "../../lib/diagramBrowser";
+import { annotationKeyAction } from "../../lib/diagramKeys";
 import { reportCount } from "../../lib/diagramDrift";
 import type { DriftReport } from "../../lib/diagramDrift";
-import type { DiagramEdge, TableNode } from "../../lib/diagramFlow";
+import type { DiagramEdge, DiagramNode } from "../../lib/diagramFlow";
 import { MAX_ZOOM, MIN_ZOOM, stepZoom } from "../../lib/diagramZoom";
 import { useDiagrams } from "../../stores/diagram";
 import { useSavedDiagrams } from "../../stores/savedDiagrams";
 import { useTabs } from "../../stores/tabs";
 import { ToolButton } from "../ToolButton";
 import { useContextMenu } from "../tree/ContextMenu";
+import { AnnotationBox } from "./AnnotationBox";
 import { DependencyLine } from "./DependencyLine";
 import { DiagramId } from "./DiagramId";
 import { FkLine } from "./FkLine";
@@ -31,11 +35,11 @@ const PROGRESS_AFTER_MS = 1000;
 
 const FIT = { minZoom: MIN_ZOOM, maxZoom: 1, padding: 0.03 };
 
-const nodeTypes = { table: TableBox };
+const nodeTypes = { table: TableBox, label: AnnotationBox, note: AnnotationBox };
 const edgeTypes = { fk: FkLine, dependency: DependencyLine };
 
 /** Theme colours everything already reads, so nothing has to re-render to change them. */
-const BLACK_AND_WHITE = { "--color-primary": "#1f2937", "--color-primary-content": "#ffffff", "--color-secondary": "#1f2937", "--color-warning": "#1f2937" } as CSSProperties;
+const BLACK_AND_WHITE = { "--color-primary": "#1f2937", "--color-primary-content": "#ffffff", "--color-secondary": "#1f2937", "--color-warning": "#1f2937", "--color-accent": "#1f2937", "--color-info": "#1f2937", "--color-success": "#1f2937", "--color-error": "#1f2937", "--color-accent-content": "#ffffff", "--color-info-content": "#ffffff", "--color-success-content": "#ffffff", "--color-error-content": "#ffffff", "--color-secondary-content": "#ffffff", "--color-warning-content": "#ffffff" } as CSSProperties;
 
 function Canvas({ id }: { id: string }) {
   const nodes = useDiagrams((s) => s.diagrams[id]?.nodes);
@@ -70,11 +74,19 @@ function Canvas({ id }: { id: string }) {
   }, [id, options, structure, updateNodeInternals]);
 
   const onNodesChange = useCallback(
-    (changes: NodeChange<TableNode>[]) => {
+    (changes: NodeChange<DiagramNode>[]) => {
       const { diagrams, setNodes } = useDiagrams.getState();
+      // The resizer knows only the pointer: a note narrowed to wrap onto more lines must grow, not clip.
+      changes = changes.map((c) => {
+        const a = c.type === "dimensions" && c.resizing !== undefined && c.dimensions ? diagrams[id].annotations.find((x) => x.id === c.id) : undefined;
+        return a && c.type === "dimensions" && c.dimensions ? { ...c, dimensions: fitNote(a, c.dimensions, measureText) } : c;
+      });
       const moved = new Set(changes.flatMap((c) => (c.type === "position" && c.dragging ? [c.id] : [])));
-      const settled = changes.some((c) => c.type === "position" && c.dragging === false);
-      setNodes(id, applyNodeChanges(changes, diagrams[id].nodes), moved, settled);
+      // A note's resize ends with a dimensions change, as a drag ends with a position one.
+      const settled = changes.some((c) => (c.type === "position" && c.dragging === false) || (c.type === "dimensions" && c.resizing === false));
+      // Only the resizer sets `resizing`; a measuring change doesn't, and isn't the user's size.
+      const resized = new Set(changes.flatMap((c) => (c.type === "dimensions" && c.resizing !== undefined ? [c.id] : [])));
+      setNodes(id, applyNodeChanges(changes, diagrams[id].nodes), moved, settled, resized);
     },
     [id],
   );
@@ -90,8 +102,8 @@ function Canvas({ id }: { id: string }) {
     [id],
   );
   const onMoveEnd = useCallback((_: unknown, viewport: Viewport) => useDiagrams.getState().setViewport(id, viewport), [id]);
-  const onNodeDoubleClick = useCallback<NodeMouseHandler<TableNode>>((_, node) => designObject(id, node.id), [id]);
-  const onNodeContextMenu = useCallback<NodeMouseHandler<TableNode>>((e, node) => openMenu(e, nodeMenu(id, node.id)), [id, openMenu]);
+  const onNodeDoubleClick = useCallback<NodeMouseHandler<DiagramNode>>((_, node) => designObject(id, node.id), [id]);
+  const onNodeContextMenu = useCallback<NodeMouseHandler<DiagramNode>>((e, node) => openMenu(e, nodeMenu(id, node.id)), [id, openMenu]);
   const onEdgeMouseEnter = useCallback<EdgeMouseHandler<DiagramEdge>>(
     (_, edge) => {
       const { diagrams, setHover } = useDiagrams.getState();
@@ -123,6 +135,7 @@ function Canvas({ id }: { id: string }) {
       nodesConnectable={false}
       edgesFocusable={false}
       elevateEdgesOnSelect
+      elevateNodesOnSelect={false}
       deleteKeyCode={null}
     >
       <Background gap={20} />
@@ -192,15 +205,34 @@ function LayoutProgress({ id }: { id: string }) {
 function LayoutButtons({ id }: { id: string }) {
   const selected = useDiagrams((s) => s.diagrams[id]?.selection.nodes);
   const canUndo = useDiagrams((s) => !!s.diagrams[id]?.undo.length);
-  const count = selected?.length ?? 0;
+  const objects = useMemo(() => objectNodes(selected ?? []), [selected]);
+  const count = objects.length;
   const title = count === 1 ? "Select more objects, or none for the whole diagram" : count ? `Auto Layout the ${count} selected objects` : "Auto Layout the whole diagram";
-  const run = () => void useDiagrams.getState().autoLayout(id, selected);
+  const run = () => void useDiagrams.getState().autoLayout(id, objects);
   return (
     <>
       <ToolButton icon={Network} label="Auto Layout" title={title} iconOnly disabled={count === 1} onClick={run} />
       <LayoutOptions id={id} runTitle={title} canRun={count !== 1} onRun={run} />
       <ToolButton icon={Undo2} label="Undo Layout" title="Undo Auto Layout (⌘Z)" iconOnly disabled={!canUndo} onClick={() => useDiagrams.getState().undoLayout(id)} />
       <LayoutProgress id={id} />
+    </>
+  );
+}
+
+/** Adds at the canvas's centre, stepped so a second click doesn't land on the first. */
+function AnnotationButtons({ id }: { id: string }) {
+  const flow = useReactFlow();
+  const store = useStoreApi();
+  const add = (kind: "label" | "note") => {
+    const { x, y, zoom } = flow.getViewport();
+    const { width, height } = store.getState();
+    const step = PASTE_OFFSET * ((useDiagrams.getState().diagrams[id]?.annotations.length ?? 0) % 10);
+    useDiagrams.getState().addAnnotation(id, kind, { x: (width / 2 - x) / zoom + step, y: (height / 2 - y) / zoom + step });
+  };
+  return (
+    <>
+      <ToolButton icon={Type} label="Label" title="Add a Label" iconOnly onClick={() => add("label")} />
+      <ToolButton icon={StickyNote} label="Note" title="Add a Note" iconOnly onClick={() => add("note")} />
     </>
   );
 }
@@ -213,7 +245,24 @@ function useKeys(id: string) {
   useEffect(() => {
     if (!active) return;
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.altKey || document.querySelector("dialog[open]")) return;
+      if (e.altKey || document.querySelector("dialog[open]")) return;
+      const state = useDiagrams.getState();
+      const meta = e.metaKey || e.ctrlKey;
+      const field = !!(e.target as HTMLElement | null)?.closest?.("input, textarea, select, [contenteditable]");
+      const diagram = state.diagrams[id];
+      const selected = diagram?.selection.nodes ?? [];
+      const note = annotationKeyAction({ key: e.key, meta, inField: field, textSelected: !!window.getSelection()?.toString() }, selected, !!diagram?.clipboard.length);
+      if (note) {
+        // WebKit goes back a page on Backspace unless it's prevented.
+        e.preventDefault();
+        if (note === "delete") state.deleteAnnotations(id, selected.filter(isAnnotationId));
+        else if (note === "copy") state.copyAnnotations(id, selected.filter(isAnnotationId));
+        else state.pasteAnnotations(id);
+        return;
+      }
+      // WebKit goes back a page on Backspace outside a field, even when nothing here uses it.
+      if (e.key === "Backspace" && !field) e.preventDefault();
+      if (!meta) return;
       const saved = useSavedDiagrams.getState();
       const zoom = flow.getZoom();
       const actions: Record<string, () => void> = {
@@ -222,12 +271,13 @@ function useKeys(id: string) {
         "=": () => void flow.zoomTo(stepZoom(zoom, 1)),
         "+": () => void flow.zoomTo(stepZoom(zoom, 1)),
         "-": () => void flow.zoomTo(stepZoom(zoom, -1)),
-        z: () => useDiagrams.getState().undoLayout(id),
+        z: () => state.undoLayout(id),
       };
-      const action = actions[e.key.toLowerCase()];
+      const key = e.key.toLowerCase();
+      const action = actions[key];
       if (!action) return;
-      // The search box has its own undo.
-      if (e.key.toLowerCase() === "z" && (e.shiftKey || (e.target as HTMLElement).closest("input, textarea, select"))) return;
+      // A text field has its own undo.
+      if (key === "z" && (e.shiftKey || field)) return;
       e.preventDefault();
       action();
     };
@@ -260,6 +310,7 @@ function Workspace({ id }: { id: string }) {
           <ToolButton icon={SaveAll} label="Save As" title="Save As (⌘⇧S)" iconOnly onClick={() => useSavedDiagrams.getState().setPrompt({ kind: "save-as", tabId: id })} />
           <ToolButton icon={RefreshCw} label="Refresh" title="Reload from the database" iconOnly onClick={() => void useDiagrams.getState().load(id)} />
           <ToolButton icon={ListPlus} label="Objects" title={pendingReport ? "Review the changes in the database first" : "Choose the Objects on This Diagram"} iconOnly disabled={pendingReport} onClick={() => openTablePicker(id)} />
+          <AnnotationButtons id={id} />
           <LayoutButtons id={id} />
         </div>
         <Banner id={id} />

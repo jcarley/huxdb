@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../lib/api";
-import { tableKey } from "../lib/diagramDrift";
-import type { DiagramCandidate, DiagramColumn, DiagramStructure, DiagramTable, SavedDiagram } from "../lib/types";
-import type { DiagramEdge } from "../lib/diagramFlow";
+import { foreignKeyKey, tableKey } from "../lib/diagramDrift";
+import { newAnnotation, PASTE_OFFSET } from "../lib/diagramAnnotations";
+import type { DiagramAnnotation, DiagramColors, DiagramCandidate, DiagramColumn, DiagramStructure, DiagramTable, SavedDiagram } from "../lib/types";
+import { isAnnotationNode } from "../lib/diagramFlow";
+import type { DiagramEdge, TableNode } from "../lib/diagramFlow";
 import { DEFAULT_OPTIONS } from "../lib/diagramLayout";
 import { useDiagrams } from "./diagram";
 
@@ -59,6 +61,7 @@ const loadCandidates = vi.mocked(api.diagramCandidates);
 const viewSources = vi.mocked(api.diagramViewSources);
 const store = () => useDiagrams.getState();
 const editor = () => store().diagrams.t;
+const tableNodes = () => editor().nodes.filter((n): n is TableNode => !isAnnotationNode(n));
 const settled = () => new Promise((r) => setTimeout(r));
 
 /** The database as it is now. */
@@ -106,7 +109,7 @@ describe("a new diagram", () => {
     await settled();
     expect(loadStructure).toHaveBeenCalledWith("c", "db", [1]);
     expect(editor()).toMatchObject({ status: "ready", dirty: true, report: null });
-    expect(editor().nodes[0].data.table.name).toBe("orders");
+    expect(tableNodes()[0].data.table.name).toBe("orders");
   });
 
   it("remembers every table the database has, chosen or not", async () => {
@@ -147,7 +150,7 @@ describe("a new diagram", () => {
     await store().load("t");
     first(structure(table(1, "old")));
     await settled();
-    expect(editor().nodes[0].data.table.name).toBe("new");
+    expect(tableNodes()[0].data.table.name).toBe("new");
   });
 });
 
@@ -172,7 +175,7 @@ describe("opening a saved diagram", () => {
   it("applies column changes at once, reports them, and stays clean", async () => {
     database(structure(table(1, "a", [column("id"), column("added")]), table(2, "b")));
     await openSaved(savedDiagram(s));
-    expect(editor().nodes[0].data.table.columns).toHaveLength(2);
+    expect(tableNodes()[0].data.table.columns).toHaveLength(2);
     expect(editor().report?.modified[0].changes).toEqual(["Column added added"]);
     expect(editor()).toMatchObject({ offerLayout: true, dirty: false });
   });
@@ -268,7 +271,7 @@ describe("accepting the report", () => {
     database(now);
     await openSaved(savedDiagram(s));
     await store().acceptReport("t", { add: [3], renames: [] });
-    expect(editor().nodes.map((n) => n.data.table.name)).toEqual(["a", "b", "brand_new"]);
+    expect(tableNodes().map((n) => n.data.table.name)).toEqual(["a", "b", "brand_new"]);
     expect(editor()).toMatchObject({ report: null, dirty: true, offerLayout: true });
     expect(editor().snapshot?.tables).toHaveLength(3);
     expect(editor().known).toContain(tableKey(table(4, "ignored")));
@@ -288,14 +291,14 @@ describe("accepting the report", () => {
     await openSaved(savedDiagram(s));
     expect(editor().report?.removed[0].renamedTo?.name).toBe("renamed");
     await store().acceptReport("t", { add: [], renames: [tableKey(table(2, "b"))] });
-    expect(editor().nodes.find((n) => n.data.table.name === "renamed")?.position.x).toBe(500);
+    expect(tableNodes().find((n) => n.data.table.name === "renamed")?.position.x).toBe(500);
   });
 
   it("drops the table when a possible rename isn't confirmed", async () => {
     database(structure(table(1, "a"), table(2, "renamed")));
     await openSaved(savedDiagram(s));
     await store().acceptReport("t", { add: [], renames: [] });
-    expect(editor().nodes.map((n) => n.data.table.name)).toEqual(["a"]);
+    expect(tableNodes().map((n) => n.data.table.name)).toEqual(["a"]);
   });
 });
 
@@ -322,7 +325,7 @@ describe("options", () => {
     saved.layout.options = { ...DEFAULT_OPTIONS, fontSize: 14, blackAndWhite: true };
     await openSaved(saved);
     expect(editor().options).toMatchObject({ fontSize: 14, blackAndWhite: true });
-    expect(editor().nodes[0].data.options.fontSize).toBe(14);
+    expect(tableNodes()[0].data.options.fontSize).toBe(14);
     expect(editor().dirty).toBe(false);
   });
 
@@ -538,7 +541,7 @@ describe("changing the tables", () => {
     database(s);
     await openSaved(savedDiagram(s));
     store().removeTables("t", ["2"]);
-    expect(editor().nodes.map((n) => n.data.table.name)).toEqual(["a", "c"]);
+    expect(tableNodes().map((n) => n.data.table.name)).toEqual(["a", "c"]);
     expect(editor().dirty).toBe(true);
     const content = store().content("t")!;
     expect(content.objects).toBe(2);
@@ -565,7 +568,7 @@ describe("changing the tables", () => {
     await openSaved(savedDiagram(structure(table(1, "a"), table(2, "b"), table(3, "c")), now.tables.map(tableKey)));
     const place = editor().nodes[1].position;
     await store().setTables("t", [2, 3, 4]);
-    expect(editor().nodes.map((n) => n.data.table.name)).toEqual(["b", "c", "d"]);
+    expect(tableNodes().map((n) => n.data.table.name)).toEqual(["b", "c", "d"]);
     expect(editor().nodes[0].position).toEqual(place);
     expect(editor()).toMatchObject({ offerLayout: true, dirty: true, report: null });
     expect(store().content("t")?.layout.tables[tableKey(table(1, "a"))]).toBeUndefined();
@@ -620,5 +623,368 @@ describe("tracing a view", () => {
     answer(columns);
     await running;
     expect(editor().traces).toEqual({});
+  });
+});
+
+describe("annotations", () => {
+  const s: DiagramStructure = { tables: [table(1, "a"), table(2, "b")], foreignKeys: [] };
+  const note: DiagramAnnotation = { ...newAnnotation("note", { x: 777, y: 888 }, 2), text: "remember" };
+  const colors: DiagramColors = { objects: { [tableKey(table(1, "a"))]: "info" }, lines: {} };
+  const withNote = () => {
+    const saved = savedDiagram(s);
+    return { ...saved, layout: { ...saved.layout, annotations: [note], colors } };
+  };
+  const annotationNodes = () => editor().nodes.filter((n) => n.id === note.id);
+  const opened = async () => {
+    database(s);
+    await openSaved(withNote());
+  };
+
+  beforeEach(() => {
+    Object.assign(elk, { hold: false, step: 300, finished: 0 });
+    elk.waiting.length = 0;
+  });
+
+  it("round-trips through the file", async () => {
+    await opened();
+    expect(editor()).toMatchObject({ annotations: [note], colors, dirty: false });
+    expect(annotationNodes()).toHaveLength(1);
+    expect(store().content("t")?.layout).toMatchObject({ annotations: [note], colors });
+  });
+
+  it("opens a file with neither as empty, and clean", async () => {
+    database(s);
+    await openSaved(savedDiagram(s));
+    expect(editor()).toMatchObject({ annotations: [], colors: { objects: {}, lines: {} }, dirty: false });
+  });
+
+  it("keeps annotations in place through a reload, new options and a whole layout", async () => {
+    await opened();
+    const place = () => annotationNodes().map((n) => n.position);
+    await store().load("t");
+    expect(place()).toEqual([{ x: 777, y: 888 }]);
+    await store().setOptions("t", { fontSize: 16 });
+    expect(place()).toEqual([{ x: 777, y: 888 }]);
+    await store().autoLayout("t");
+    expect(place()).toEqual([{ x: 777, y: 888 }]);
+    expect(editor().nodes.filter((n) => n.id !== note.id)).toHaveLength(2);
+  });
+
+  it("lays out only the tables in a selection, and the whole diagram for an annotation alone", async () => {
+    await opened();
+    const before = Object.fromEntries(editor().nodes.map((n) => [n.id, n.position]));
+    await store().autoLayout("t", [note.id, "1", "2"]);
+    expect(editor().layoutsDone).toBe(0);
+    expect(annotationNodes()[0].position).toEqual(before[note.id]);
+    await store().autoLayout("t", [note.id]);
+    expect(editor().layoutsDone).toBe(1);
+  });
+
+  it("counts dragging an annotation as a change, and saves its new place", async () => {
+    await opened();
+    const nodes = editor().nodes.map((n) => (n.id === note.id ? { ...n, position: { x: 10, y: 20 } } : n));
+    store().setNodes("t", nodes, new Set([note.id]), false);
+    store().setNodes("t", nodes, new Set(), true);
+    expect(editor().dirty).toBe(true);
+    expect(store().content("t")?.layout.annotations?.[0]).toMatchObject({ x: 10, y: 20 });
+  });
+
+  it("keeps the height the user set when the text needs more, and stays clean after a table drag", async () => {
+    const tall = { ...note, text: "word ".repeat(200), height: 100 };
+    database(s);
+    const saved = withNote();
+    await openSaved({ ...saved, layout: { ...saved.layout, annotations: [tall] } });
+    expect(annotationNodes()[0].height).toBeGreaterThan(100);
+    drag(0);
+    expect(editor().annotations[0].height).toBe(100);
+    expect(editor().dirty).toBe(false);
+  });
+
+  it("draws the annotations as they are when a load finishes, not as they were when it began", async () => {
+    await opened();
+    database(s);
+    const running = store().load("t");
+    useDiagrams.setState((st) => ({ diagrams: { ...st.diagrams, t: { ...st.diagrams.t, annotations: [{ ...note, text: "edited meanwhile" }] } } }));
+    await running;
+    expect(annotationNodes()[0].data.lines).toEqual(["edited meanwhile"]);
+  });
+
+  it("doesn't remove an annotation when asked to remove its id as a table", async () => {
+    await opened();
+    store().removeTables("t", [note.id, "1"]);
+    expect(editor().annotations).toEqual([note]);
+    expect(annotationNodes()).toHaveLength(1);
+    expect(tableNodes().map((n) => n.id)).toEqual(["2"]);
+  });
+});
+
+describe("editing annotations", () => {
+  const s: DiagramStructure = { tables: [table(1, "a"), table(2, "b")], foreignKeys: [] };
+  const clean = async () => {
+    database(s);
+    const saved = savedDiagram(s);
+    await openSaved(saved);
+    expect(editor().dirty).toBe(false);
+  };
+  const add = (kind: "label" | "note" = "note", at = { x: 5, y: 6 }) => {
+    store().addAnnotation("t", kind, at);
+    return editor().annotations[editor().annotations.length - 1];
+  };
+  const node = (annotationId: string) => editor().nodes.find((n) => n.id === annotationId)!;
+
+  it("adds on top, selects the new node and starts editing it", async () => {
+    await clean();
+    const first = add();
+    const second = add("label");
+    expect(second.z).toBeGreaterThan(first.z);
+    expect(editor().editing).toBe(second.id);
+    expect(editor().selection).toEqual({ nodes: [second.id], edge: null, foreignKey: null });
+    expect(editor().nodes.filter((n) => n.selected).map((n) => n.id)).toEqual([second.id]);
+    expect(editor().dirty).toBe(true);
+  });
+
+  it("clears a selected table and line when adding", async () => {
+    await clean();
+    store().selectNode("t", "1");
+    const a = add();
+    expect(node("1").selected).toBe(false);
+    expect(editor().selection.nodes).toEqual([a.id]);
+  });
+
+  it("re-wraps on a text change without touching other nodes, and keeps selection and place", async () => {
+    await clean();
+    const a = add();
+    store().updateAnnotation("t", a.id, { text: "hello" });
+    store().stopEditing("t");
+    store().select("t", { nodes: [a.id], edge: null });
+    const before = editor().nodes;
+    const place = node(a.id).position;
+    store().updateAnnotation("t", a.id, { text: "hello world" });
+    const after = editor().nodes;
+    expect((node(a.id).data as { lines: string[] }).lines).toEqual(["hello world"]);
+    expect(node(a.id).position).toEqual(place);
+    expect(node(a.id).selected).toBe(true);
+    expect(after.filter((n) => n.id !== a.id).every((n) => before.includes(n))).toBe(true);
+    expect(editor().annotations[0].text).toBe("hello world");
+    expect(editor().editing).toBeNull();
+  });
+
+  it("doesn't change editing when updating", async () => {
+    await clean();
+    const a = add();
+    store().updateAnnotation("t", a.id, { text: "x" });
+    expect(editor().editing).toBe(a.id);
+  });
+
+  it("grows a note's node with its text while content keeps the height the user set", async () => {
+    await clean();
+    const a = add();
+    store().updateAnnotation("t", a.id, { text: "word ".repeat(200) });
+    expect(node(a.id).height).toBeGreaterThan(100);
+    expect(store().content("t")?.layout.annotations?.[0].height).toBe(100);
+  });
+
+  it("sizes a label's node by its text", async () => {
+    await clean();
+    const a = add("label");
+    store().updateAnnotation("t", a.id, { text: "ab" });
+    const narrow = node(a.id).width!;
+    store().updateAnnotation("t", a.id, { text: "abcdefgh" });
+    expect(node(a.id).width!).toBeGreaterThan(narrow);
+  });
+
+  it("removes an annotation left blank, and stays clean when that was the only change", async () => {
+    await clean();
+    const a = add();
+    store().updateAnnotation("t", a.id, { text: "  \n " });
+    store().stopEditing("t");
+    expect(editor().annotations).toEqual([]);
+    expect(editor().nodes.some((n) => n.id === a.id)).toBe(false);
+    expect(editor().editing).toBeNull();
+    expect(editor().dirty).toBe(false);
+  });
+
+  it("keeps an annotation with text when editing stops", async () => {
+    await clean();
+    const a = add();
+    store().updateAnnotation("t", a.id, { text: "keep" });
+    store().stopEditing("t");
+    expect(editor().annotations.map((x) => x.id)).toEqual([a.id]);
+    expect(editor().editing).toBeNull();
+    expect(editor().dirty).toBe(true);
+  });
+
+  it("starts editing an annotation", async () => {
+    await clean();
+    const a = add();
+    store().updateAnnotation("t", a.id, { text: "x" });
+    store().stopEditing("t");
+    expect(editor().editing).toBeNull();
+    store().startEditing("t", a.id);
+    expect(editor().editing).toBe(a.id);
+  });
+
+  it("sends to back below zero and keeps order, and brings to front above all", async () => {
+    await clean();
+    const [a, b, c] = [add(), add(), add()];
+    store().sendToBack("t", [b.id, c.id]);
+    const z = (x: DiagramAnnotation) => editor().annotations.find((n) => n.id === x.id)!.z;
+    expect(z(b)).toBeLessThan(0);
+    expect(z(c)).toBeLessThan(0);
+    expect(z(b)).toBeLessThan(z(c));
+    expect(z(c)).toBeLessThan(z(a));
+    expect(node(b.id).zIndex).toBe(z(b));
+    store().bringToFront("t", [b.id, c.id]);
+    expect(z(b)).toBeGreaterThan(z(a));
+    expect(z(c)).toBeGreaterThan(z(b));
+  });
+
+  it("deletes the node, the annotation and its selection, and clears editing", async () => {
+    await clean();
+    const a = add();
+    const b = add();
+    store().select("t", { nodes: [a.id, b.id], edge: null });
+    store().deleteAnnotations("t", [b.id]);
+    expect(editor().annotations.map((x) => x.id)).toEqual([a.id]);
+    expect(editor().nodes.some((n) => n.id === b.id)).toBe(false);
+    expect(editor().selection.nodes).toEqual([a.id]);
+    expect(editor().editing).toBeNull();
+  });
+
+  it("leaves editing alone when deleting another annotation", async () => {
+    await clean();
+    const a = add();
+    const b = add();
+    store().deleteAnnotations("t", [a.id]);
+    expect(editor().editing).toBe(b.id);
+  });
+
+  it("pastes copies with new ids, offset, selected alone, and offsets again on a second paste", async () => {
+    await clean();
+    const a = add();
+    store().updateAnnotation("t", a.id, { text: "hi" });
+    store().stopEditing("t");
+    store().copyAnnotations("t", [a.id]);
+    store().updateAnnotation("t", a.id, { text: "changed after copy" });
+    store().pasteAnnotations("t");
+    store().pasteAnnotations("t");
+    const [orig, one, two] = editor().annotations;
+    expect(one.id).not.toBe(orig.id);
+    expect(one.text).toBe("hi");
+    expect([one.x, one.y]).toEqual([orig.x + PASTE_OFFSET, orig.y + PASTE_OFFSET]);
+    expect([two.x, two.y]).toEqual([orig.x + 2 * PASTE_OFFSET, orig.y + 2 * PASTE_OFFSET]);
+    expect(editor().selection.nodes).toEqual([two.id]);
+    expect(editor().nodes.filter((n) => n.selected).map((n) => n.id)).toEqual([two.id]);
+    expect(two.z).toBeGreaterThan(one.z);
+  });
+
+  it("does nothing when pasting an empty clipboard", async () => {
+    await clean();
+    const before = editor();
+    store().pasteAnnotations("t");
+    expect(editor().annotations).toBe(before.annotations);
+    expect(editor().nodes).toBe(before.nodes);
+    expect(editor().selection).toBe(before.selection);
+  });
+
+  it("colours an object by its key, ignores annotations, and null removes it", async () => {
+    await clean();
+    store().setObjectColor("t", ["1", "a:x"], "error");
+    expect(editor().colors.objects).toEqual({ [tableKey(table(1, "a"))]: "error" });
+    expect(editor().dirty).toBe(true);
+    store().setObjectColor("t", ["1"], null);
+    expect(editor().colors.objects).toEqual({});
+    expect(editor().dirty).toBe(false);
+  });
+
+  it("colours a line by its foreign key key", async () => {
+    const fk = { oid: 9, name: "fk_ab", childOid: 1, parentOid: 2, childColumns: ["id"], parentColumns: ["id"], childPartition: null, parentPartition: null, matchType: "s", onUpdate: "a", onDelete: "a", childRequiresParent: false, uniqueVia: null, validated: true, enforced: true };
+    const withFk: DiagramStructure = { ...s, foreignKeys: [fk] };
+    database(withFk);
+    await openSaved(savedDiagram(withFk));
+    store().setLineColor("t", "9", "info");
+    expect(editor().colors.lines).toEqual({ [foreignKeyKey(fk, table(1, "a"))]: "info" });
+    expect(editor().dirty).toBe(true);
+  });
+});
+
+describe("colours across structure changes", () => {
+  const s: DiagramStructure = { tables: [table(1, "a"), table(2, "b")], foreignKeys: [] };
+  const keyA = tableKey(table(1, "a"));
+  const keyB = tableKey(table(2, "b"));
+  const coloured = async () => {
+    database(s);
+    const saved = savedDiagram(s);
+    await openSaved({ ...saved, layout: { ...saved.layout, colors: { objects: { [keyA]: "info", [keyB]: "error" }, lines: {} } } });
+  };
+
+  it("survives a load", async () => {
+    await coloured();
+    await store().load("t");
+    expect(editor().colors.objects).toEqual({ [keyA]: "info", [keyB]: "error" });
+  });
+
+  it("is dropped by removeTables", async () => {
+    await coloured();
+    store().removeTables("t", ["2"]);
+    expect(editor().colors.objects).toEqual({ [keyA]: "info" });
+  });
+
+  it("is dropped by setTables leaving the table out", async () => {
+    await coloured();
+    database(s);
+    await store().setTables("t", [1]);
+    expect(editor().colors.objects).toEqual({ [keyA]: "info" });
+  });
+
+  it("stays after a refresh that finds the table gone, until the removal is accepted", async () => {
+    await coloured();
+    database(structure(table(1, "a")));
+    await store().load("t");
+    expect(editor().colors.objects).toEqual({ [keyA]: "info", [keyB]: "error" });
+    await store().acceptReport("t", { add: [], renames: [] });
+    expect(editor().colors.objects).toEqual({ [keyA]: "info" });
+  });
+
+  it("moves with a rename accepted in the report", async () => {
+    await coloured();
+    const renamed = table(2, "b2");
+    database(structure(table(1, "a"), renamed));
+    await store().load("t");
+    expect(editor().report?.removed[0].renamedTo?.name).toBe("b2");
+    await store().acceptReport("t", { add: [], renames: [keyB] });
+    expect(editor().colors.objects).toEqual({ [keyA]: "info", [tableKey(renamed)]: "error" });
+  });
+
+  it("keeps the colour of a table reported as removed when another is removed, and drops it on accept", async () => {
+    await coloured();
+    database(structure(table(1, "a")));
+    await store().load("t");
+    store().removeTables("t", ["1"]);
+    expect(editor().colors.objects).toEqual({ [keyB]: "error" });
+    await store().acceptReport("t", { add: [], renames: [] });
+    expect(editor().colors.objects).toEqual({});
+  });
+
+  it("keeps a colour set while accepting", async () => {
+    await coloured();
+    database(structure(table(1, "a")));
+    await store().load("t");
+    const accepting = store().acceptReport("t", { add: [], renames: [] });
+    store().setObjectColor("t", ["1"], "success");
+    await accepting;
+    expect(editor().colors.objects).toEqual({ [keyA]: "success" });
+  });
+
+  it("moves a renamed child's line colours with it", async () => {
+    const fk = { oid: 9, name: "fk_ba", childOid: 2, parentOid: 1, childColumns: ["id"], parentColumns: ["id"], childPartition: null, parentPartition: null, matchType: "s", onUpdate: "a", onDelete: "a", childRequiresParent: false, uniqueVia: null, validated: true, enforced: true };
+    const old: DiagramStructure = { tables: [table(1, "a"), table(2, "b")], foreignKeys: [fk] };
+    database(old);
+    const saved = savedDiagram(old);
+    await openSaved({ ...saved, layout: { ...saved.layout, colors: { objects: {}, lines: { [foreignKeyKey(fk, table(2, "b"))]: "info" } } } });
+    database({ tables: [table(1, "a"), table(2, "b2")], foreignKeys: [fk] });
+    await store().load("t");
+    await store().acceptReport("t", { add: [], renames: [keyB] });
+    expect(editor().colors.lines).toEqual({ [foreignKeyKey(fk, table(2, "b2"))]: "info" });
   });
 });

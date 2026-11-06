@@ -1,9 +1,11 @@
+import { StickyNote, Type } from "lucide-react";
 import { useReactFlow } from "@xyflow/react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { annotationTitle } from "../../lib/diagramAnnotations";
 import { objectKind, objectLabel } from "../../lib/diagramDrift";
 import { useDiagrams } from "../../stores/diagram";
 import { useContextMenu } from "../tree/ContextMenu";
-import { designObject, nodeMenu } from "./nodeMenu";
+import { annotationMenu, designObject, nodeMenu } from "./nodeMenu";
 import { OBJECT_ICONS } from "./objectIcons";
 
 /** Close enough to read a table's rows, when it's picked from a zoomed-out list. */
@@ -13,6 +15,7 @@ const READING_ZOOM = 0.75;
 export function ObjectPane({ id }: { id: string }) {
   const tables = useDiagrams((s) => s.diagrams[id]?.structure?.tables);
   const selected = useDiagrams((s) => s.diagrams[id]?.selection.nodes);
+  const annotations = useDiagrams((s) => s.diagrams[id]?.annotations);
   const showSchema = useDiagrams((s) => s.diagrams[id]?.options?.showSchemaNames);
   const openMenu = useContextMenu((s) => s.open);
   const flow = useReactFlow();
@@ -26,6 +29,13 @@ export function ObjectPane({ id }: { id: string }) {
       .map((t) => ({ id: String(t.oid), kind: objectKind(t), label: showSchema ? `${t.schema}.${objectLabel(t)}` : objectLabel(t) }))
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [search, showSchema, tables]);
+
+  const notes = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return (annotations ?? [])
+      .filter((a) => !needle || a.text.toLowerCase().includes(needle))
+      .map((a) => ({ id: a.id, kind: a.kind, label: annotationTitle(a) }));
+  }, [annotations, search]);
 
   // A table picked on the canvas may be scrolled away here.
   const single = selected?.length === 1 ? selected[0] : null;
@@ -63,7 +73,27 @@ export function ObjectPane({ id }: { id: string }) {
             </button>
           );
         })}
-        {rows.length === 0 && <p className="p-2 text-xs text-base-content/60">{tables?.length ? "No objects match." : "No objects"}</p>}
+        {notes.length > 0 && <h3 className="px-1.5 pb-0.5 pt-2 text-xs font-semibold text-base-content/60">Annotations</h3>}
+        {notes.map((row) => {
+          const Icon = row.kind === "label" ? Type : StickyNote;
+          return (
+            <button
+              key={row.id}
+              type="button"
+              data-node={row.id}
+              title={row.label}
+              className={`flex w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-left ${picked.has(row.id) ? "bg-primary/15" : "hover:bg-base-200"}`}
+              aria-pressed={picked.has(row.id)}
+              onClick={() => pick(row.id)}
+              onDoubleClick={() => useDiagrams.getState().startEditing(id, row.id)}
+              onContextMenu={(e) => openMenu(e, annotationMenu(id, row.id))}
+            >
+              <Icon className="size-3.5 shrink-0 text-base-content/60" strokeWidth={1.75} />
+              <span className="truncate">{row.label}</span>
+            </button>
+          );
+        })}
+        {rows.length === 0 && notes.length === 0 && <p className="p-2 text-xs text-base-content/60">{tables?.length || annotations?.length ? "No objects match." : "No objects"}</p>}
       </div>
       <div className="border-t border-base-300 p-1">
         <input type="search" className="input input-xs w-full" placeholder="Search" aria-label="Search objects" value={search} onChange={(e) => setSearch(e.target.value)} />

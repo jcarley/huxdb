@@ -1,25 +1,54 @@
 // Between a diagram on screen and its saved layout. Pure.
 
 import { dependencyKey, foreignKeyKey, tableKey } from "./diagramDrift";
-import type { DiagramEdge, TableNode } from "./diagramFlow";
+import { isAnnotationId } from "./diagramAnnotations";
+import type { DiagramEdge, DiagramNode } from "./diagramFlow";
 import { dependencyId, layoutEdges, partition, shelves } from "./diagramLayout";
 import type { Box, Layout, Point } from "./diagramLayout";
-import type { DiagramLayoutFile, DiagramOptions, DiagramStructure, DiagramViewport } from "./types";
+import type { DiagramAnnotation, DiagramColor, DiagramColors, DiagramLayoutFile, DiagramOptions, DiagramStructure, DiagramViewport } from "./types";
 
 const NEW_TABLE_GAP = 60;
 
-/** What makes a diagram differ from its last save. Pan and zoom are saved but aren't in it. */
-export const layoutSignature = (nodes: TableNode[], options?: DiagramOptions) =>
+export const EMPTY_COLORS: DiagramColors = { objects: {}, lines: {} };
+/** Colours whose object or line is still in `structure`. */
+export function pruneColors(colors: DiagramColors, structure: DiagramStructure): DiagramColors {
+  const tables = new Map(structure.tables.map((t) => [t.oid, t]));
+  const objects = new Set(structure.tables.map(tableKey));
+  const lines = new Set(structure.foreignKeys.flatMap((fk) => (tables.has(fk.childOid) ? [foreignKeyKey(fk, tables.get(fk.childOid)!)] : [])));
+  const keep = (map: Record<string, DiagramColor>, alive: Set<string>) => Object.fromEntries(Object.entries(map).filter(([key]) => alive.has(key)));
+  return { objects: keep(colors.objects, objects), lines: keep(colors.lines, lines) };
+}
+
+/** Moves an object's colour, and its foreign keys' line colours, to a renamed table's keys. */
+export function renameColors(colors: DiagramColors, from: string, to: { schema: string; name: string }): DiagramColors {
+  const lines = Object.fromEntries(
+    Object.entries(colors.lines).map(([key, color]) => {
+      const [schema, name, fk] = JSON.parse(key) as string[];
+      return JSON.stringify([schema, name]) === from ? [JSON.stringify([to.schema, to.name, fk]), color] : [key, color];
+    }),
+  );
+  const { [from]: own, ...rest } = colors.objects;
+  return { objects: own ? { ...rest, [tableKey(to)]: own } : colors.objects, lines };
+}
+
+const sorted = (map: Record<string, string>) => Object.entries(map).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+
+/**
+ * What makes a diagram differ from its last save. Pan and zoom are saved but aren't in it.
+ * Annotations come from their own list, whose places are synced from the nodes, so nodes of theirs are skipped.
+ */
+export const layoutSignature = (nodes: DiagramNode[], options?: DiagramOptions, colors: DiagramColors = EMPTY_COLORS, annotations: DiagramAnnotation[] = []) =>
   `${JSON.stringify(options)}|${nodes
+    .filter((n) => !isAnnotationId(n.id))
     .map((n) => `${n.id}:${Math.round(n.position.x)},${Math.round(n.position.y)}`)
     .sort()
-    .join(";")}`;
+    .join(";")}|${JSON.stringify([sorted(colors.objects), sorted(colors.lines)])}|${JSON.stringify(annotations.map((a) => ({ ...a, x: Math.round(a.x), y: Math.round(a.y) })))}`;
 
 /**
  * The layout to save. Positions in `previous` stay, so a table that's gone from the database
  * keeps its place until the report is accepted, in case it comes back.
  */
-export function captureLayout(structure: DiagramStructure, nodes: TableNode[], edges: DiagramEdge[], previous: DiagramLayoutFile | null, viewport: DiagramViewport | null, options?: DiagramOptions): DiagramLayoutFile {
+export function captureLayout(structure: DiagramStructure, nodes: DiagramNode[], edges: DiagramEdge[], previous: DiagramLayoutFile | null, viewport: DiagramViewport | null, options?: DiagramOptions): DiagramLayoutFile {
   const tables = new Map(structure.tables.map((t) => [t.oid, t]));
   const positions = { ...previous?.tables };
   for (const node of nodes) {

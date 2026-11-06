@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { dependencyKey, foreignKeyKey, tableKey } from "./diagramDrift";
-import { captureLayout, layoutSignature, restoreLayout } from "./diagramFile";
+import { captureLayout, layoutSignature, pruneColors, restoreLayout } from "./diagramFile";
 import { toEdges, toNodes } from "./diagramFlow";
 import { DEFAULT_OPTIONS } from "./diagramLayout";
 import type { Box, Layout } from "./diagramLayout";
-import type { DiagramForeignKey, DiagramLayoutFile, DiagramStructure, DiagramTable } from "./types";
+import { newAnnotation } from "./diagramAnnotations";
+import type { DiagramColors, DiagramForeignKey, DiagramLayoutFile, DiagramStructure, DiagramTable } from "./types";
 
 const table = (oid: number): DiagramTable => ({ oid, schema: "public", name: `t${oid}`, comment: null, columns: [{ name: "id", dataType: "integer", notNull: true, primaryKey: true, comment: null }, { name: "a", dataType: "integer", notNull: false, primaryKey: false, comment: null }] });
 const fk = (oid: number, childOid: number, parentOid: number): DiagramForeignKey => ({ oid, name: `fk${oid}`, childOid, parentOid, childColumns: ["a"], parentColumns: ["id"], childPartition: null, parentPartition: null, matchType: "s", onUpdate: "a", onDelete: "a", childRequiresParent: false, uniqueVia: null, validated: true, enforced: true });
@@ -25,6 +26,25 @@ describe("layoutSignature", () => {
   it("changes when a table moves, or the object set changes", () => {
     expect(layoutSignature(nodes)).not.toBe(layoutSignature([{ ...nodes[0], position: { x: 5, y: 0 } }, nodes[1]]));
     expect(layoutSignature(nodes)).not.toBe(layoutSignature([nodes[0]]));
+  });
+});
+
+describe("layoutSignature with annotations and colours", () => {
+  const s: DiagramStructure = { tables: [table(1)], foreignKeys: [] };
+  const layout: Layout = { positions: new Map([[1, { x: 0, y: 0 }]]), routes: new Map(), hubEdges: new Set() };
+  const nodes = toNodes(s, layout, boxesOf(s));
+  const colors: DiagramColors = { objects: { "public.t1": "info", "public.t2": "error" }, lines: {} };
+  const note = newAnnotation("note", { x: 0, y: 0 }, 1);
+  const sig = (c = colors, a = [note]) => layoutSignature(nodes, undefined, c, a);
+
+  it("changes with a colour, a note's text and a note's place", () => {
+    expect(sig()).not.toBe(sig({ ...colors, objects: { ...colors.objects, "public.t1": "success" } }));
+    expect(sig()).not.toBe(sig(colors, [{ ...note, text: "x" }]));
+    expect(sig()).not.toBe(sig(colors, [{ ...note, x: 50 }]));
+  });
+
+  it("doesn't depend on key order in colours", () => {
+    expect(sig()).toBe(sig({ lines: {}, objects: { "public.t2": "error", "public.t1": "info" } }));
   });
 });
 
@@ -123,5 +143,17 @@ describe("dependencies in the file", () => {
   it("restores a file from before this phase, with no dependencies", () => {
     const old: DiagramStructure = { tables: [table(1), table(2)], foreignKeys: [] };
     expect(restoreLayout(empty, old, boxesOf(old), new Set()).routes.size).toBe(0);
+  });
+});
+
+describe("pruneColors", () => {
+  it("keeps entries for tables and foreign keys that are in the structure, and drops the rest", () => {
+    const s: DiagramStructure = { tables: [table(1), table(2)], foreignKeys: [fk(5, 1, 2)] };
+    const key = foreignKeyKey(fk(5, 1, 2), table(1));
+    const colors: DiagramColors = {
+      objects: { [tableKey(table(1))]: "info", [tableKey(table(9))]: "error" },
+      lines: { [key]: "warning", [foreignKeyKey(fk(6, 1, 2), table(1))]: "error" },
+    };
+    expect(pruneColors(colors, s)).toEqual({ objects: { [tableKey(table(1))]: "info" }, lines: { [key]: "warning" } });
   });
 });

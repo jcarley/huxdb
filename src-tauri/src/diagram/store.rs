@@ -23,7 +23,7 @@ use crate::fsutil::{copy_name, modified_ms, path_part, write_atomic};
 use crate::saved_queries::CHANGED_MARKER;
 
 /// Raise this when `content` changes in a way older code can't read.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 const MAX_NAME_CHARS: usize = 200;
 
 /// What the list shows about a diagram.
@@ -391,6 +391,23 @@ mod tests {
         }
         assert_eq!(fs::read_to_string(&path).unwrap(), future);
         assert_eq!(store.list(CONN).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn loads_a_file_from_an_older_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in(&dir);
+        let saved = store.create(CONN, "a", "db", content(1)).unwrap();
+        let path = file_path(&dir, &saved.id);
+        let mut old: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        old["formatVersion"] = json!(2);
+        fs::write(&path, old.to_string()).unwrap();
+
+        assert_eq!(store.list(CONN).unwrap()[0].name, "a");
+        assert_eq!(store.load(CONN, &saved.id).unwrap().content, content(1));
+        store.update(CONN, &saved.id, content(2), None).unwrap();
+        let text: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(text["formatVersion"], FORMAT_VERSION);
     }
 
     #[test]

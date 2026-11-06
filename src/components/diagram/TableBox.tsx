@@ -1,15 +1,16 @@
 import { Handle, Position, useStore } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import { Info, KeyRound, Link2 } from "lucide-react";
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import { DIAGRAM_FONT } from "../../lib/diagramBrowser";
 import type { TableNode } from "../../lib/diagramFlow";
 import { headerHeight, isCapped, MAX_ROWS, rowHeight, rowSuffix } from "../../lib/diagramLayout";
 import type { DiagramObjectKind } from "../../lib/types";
 import { useDiagrams } from "../../stores/diagram";
-import { objectKind, objectLabel } from "../../lib/diagramDrift";
+import { objectKind, objectLabel, tableKey } from "../../lib/diagramDrift";
 import { FUNCTION_NOTE } from "../../lib/diagramTrace";
 import { useDiagramId } from "./DiagramId";
+import { objectStyle } from "./colorStyles";
 import { OBJECT_ICONS } from "./objectIcons";
 
 /** Below this zoom a row can't be read, and drawing them halves the frame rate at 300 tables. */
@@ -43,10 +44,14 @@ const STYLES: Record<DiagramObjectKind, { outline: string; header: string }> = {
 export const TableBox = memo(function TableBox({ data, width, height }: NodeProps<TableNode>) {
   const { table, handles, foreignKeyColumns, options } = data;
   const showRows = useStore((s) => s.transform[2] >= ROWS_FROM_ZOOM);
+  const tabId = useDiagramId();
+  const key = useMemo(() => tableKey(table), [table]);
   const highlighted = useHighlighted(table.oid);
   const capped = isCapped(table);
   const kind = objectKind(table);
   const style = STYLES[kind];
+  const color = useDiagrams((s) => s.diagrams[tabId]?.colors.objects[key] ?? null);
+  const painted = objectStyle(color, kind);
   const Icon = OBJECT_ICONS[kind];
   const routine = kind === "function" || kind === "procedure";
   const title = options.showSchemaNames ? `${table.schema}.${table.name}` : table.name;
@@ -57,9 +62,9 @@ export const TableBox = memo(function TableBox({ data, width, height }: NodeProp
   return (
     <div
       className={`flex flex-col overflow-hidden rounded-lg ${style.outline} bg-base-100 leading-none text-base-content shadow-sm in-[.selected]:border-primary in-[.selected]:ring-2 in-[.selected]:ring-primary/40`}
-      style={{ width, height, fontSize: options.fontSize, fontFamily: `${DIAGRAM_FONT}, system-ui, sans-serif` }}
+      style={{ ...painted.outline, width, height, fontSize: options.fontSize, fontFamily: `${DIAGRAM_FONT}, system-ui, sans-serif` }}
     >
-      <div className={`flex shrink-0 items-center justify-center gap-1.5 px-2 font-semibold ${style.header}`} style={{ height: header }}>
+      <div className={`flex shrink-0 items-center justify-center gap-1.5 px-2 font-semibold ${style.header}`} style={{ ...painted.header, height: header }}>
         {kind !== "table" && <Icon className="shrink-0" style={icon} />}
         <span className="truncate" title={routine ? objectLabel(table) : title}>
           {title}

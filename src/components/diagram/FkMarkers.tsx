@@ -1,6 +1,9 @@
 import type { ChildEnd, ParentEnd } from "../../lib/diagramCardinality";
+import { DIAGRAM_COLORS } from "../../lib/diagramAnnotations";
+import type { DiagramColor } from "../../lib/types";
+import { colorVar } from "./colorStyles";
 
-export type Tone = "plain" | "hub" | "selected";
+export type Tone = "plain" | "hub" | "selected" | DiagramColor;
 type Mark = `child-${ChildEnd}` | `parent-${ParentEnd}` | "reads";
 
 const HEIGHT = 14;
@@ -22,7 +25,13 @@ const MARKS: Record<Mark, { width: number; ref: number; lines: string; ring?: nu
   reads: { width: 12, ref: 11, lines: "M2 2L11 7L2 12" },
 };
 
-const TONES: Record<Tone, { stroke: string; strokeOpacity: number; strokeWidth: number }> = {
+type Stroke = { stroke: string; strokeOpacity: number; strokeWidth: number };
+
+/** A colour's stroke is a theme variable, so Black and White overrides it with the rest. */
+const COLORED = Object.fromEntries(DIAGRAM_COLORS.map((c) => [c, { stroke: colorVar(c), strokeOpacity: 0.85, strokeWidth: 1 }])) as Record<DiagramColor, Stroke>;
+
+const TONES: Record<Tone, Stroke> = {
+  ...COLORED,
   plain: { stroke: "var(--color-base-content)", strokeOpacity: 0.45, strokeWidth: 1 },
   hub: { stroke: "var(--color-primary)", strokeOpacity: 0.45, strokeWidth: 1 },
   selected: { stroke: "var(--color-primary)", strokeOpacity: 1, strokeWidth: 2 },

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { FkData } from "./diagramFlow";
-import { applyArrangement, currentArrangement, dropRoutes, foreignKeyRule, matchLabel, reshapeNodes, revealHubLines, selectionArrangement, toEdges, toNodes } from "./diagramFlow";
+import type { FkData, TableNode } from "./diagramFlow";
+import { foreignKeyKey } from "./diagramDrift";
+import { applyArrangement, currentArrangement, dropRoutes, foreignKeyRule, matchLabel, reshapeNodes, revealHubLines, selectionArrangement, syncAnnotations, toAnnotationNodes, toEdges, toNodes } from "./diagramFlow";
+import { annotationBox, newAnnotation } from "./diagramAnnotations";
 import { DEFAULT_OPTIONS, headerHeight, MAX_ROWS, rowHeight } from "./diagramLayout";
 import type { Box, Layout } from "./diagramLayout";
 import type { DiagramForeignKey, DiagramStructure, DiagramTable } from "./types";
@@ -96,7 +98,7 @@ describe("reshapeNodes", () => {
     const nodes = toNodes(s, layoutOf(s), boxes(s));
     const moved = [{ ...nodes[0], position: { x: 77, y: 5 }, selected: true }, nodes[1]];
     const large = { ...DEFAULT_OPTIONS, fontSize: 16 };
-    const next = reshapeNodes(moved, s, new Map([[1, { width: 200, height: 90 }], [2, { width: 200, height: 90 }]]), large);
+    const next = reshapeNodes(moved, s, new Map([[1, { width: 200, height: 90 }], [2, { width: 200, height: 90 }]]), large) as TableNode[];
     expect(next[0]).toMatchObject({ position: { x: 77, y: 5 }, selected: true, width: 200 });
     expect(next[1].selected).toBeUndefined();
     expect(next[0].data.options.fontSize).toBe(16);
@@ -115,6 +117,14 @@ describe("toEdges", () => {
     const [routed, hub] = toEdges(s, layoutOf(s, [2]));
     expect(routed).toMatchObject({ hidden: false, data: { points: [{ x: 5, y: 5 }], hub: false } });
     expect(hub).toMatchObject({ hidden: true, data: { hub: true } });
+  });
+});
+
+describe("toEdges' key", () => {
+  it("carries the foreignKeyKey colours are saved under", () => {
+    const s = { tables: [table(1), table(2)], foreignKeys: [fk(1, 1, 2)] };
+    const child = s.tables[0];
+    expect(toEdges(s, layoutOf(s))[0].data).toMatchObject({ key: foreignKeyKey(s.foreignKeys[0], child) });
   });
 });
 
@@ -238,5 +248,60 @@ describe("dependency lines", () => {
     const edges = toEdges(s, layout());
     const arranged = { positions: new Map([[1, { x: 0, y: 0 }], [2, { x: 500, y: 0 }]]), routes: new Map([["dep:1:2", [{ x: 250, y: 0 }]]]), hubEdges: new Set<string>() };
     expect(selectionArrangement(arranged, nodes, edges, new Set(["1", "2"]), sized).routes.get("dep:1:2")).toEqual([{ x: 260, y: 0 }]);
+  });
+});
+
+describe("annotation nodes", () => {
+  const measure = (text: string) => text.length * 6;
+  const note = { ...newAnnotation("note", { x: 7, y: 9 }, 3), text: "hello" };
+  const s = { tables: [table(1), table(2)], foreignKeys: [] };
+
+  it("become notes and labels sized by annotationBox, layered by z, with no handles", () => {
+    const [node] = toAnnotationNodes([note], measure);
+    const box = annotationBox(note, measure);
+    expect(node).toMatchObject({ id: note.id, type: "note", position: { x: 7, y: 9 }, zIndex: 3, width: box.width, height: box.height });
+    expect(node.data.lines).toEqual(["hello"]);
+    expect(node).not.toHaveProperty("data.handles");
+  });
+
+  it("marks the selected ones", () => {
+    const [node] = toAnnotationNodes([note], measure, new Set([note.id]));
+    expect(node.selected).toBe(true);
+  });
+
+  it("are kept unchanged after the tables when tables are reshaped", () => {
+    const [annotation] = toAnnotationNodes([note], measure);
+    const tables = toNodes(s, layoutOf(s), boxes(s));
+    const next = reshapeNodes([annotation, ...tables], s, boxes(s), DEFAULT_OPTIONS);
+    expect(next.map((n) => n.id)).toEqual(["1", "2", note.id]);
+    expect(next[2]).toBe(annotation);
+  });
+
+  it("are left out of an arrangement, so Undo can't move one", () => {
+    const nodes = [...toNodes(s, layoutOf(s), boxes(s)), ...toAnnotationNodes([note], measure)];
+    expect([...currentArrangement(nodes, []).positions.keys()]).toEqual(["1", "2"]);
+  });
+});
+
+describe("syncAnnotations", () => {
+  const measure = (text: string) => text.length * 6;
+  const list = [{ ...newAnnotation("note", { x: 1, y: 2 }, 1), text: "a" }];
+
+  it("returns the same array when nothing moved", () => {
+    expect(syncAnnotations(list, toAnnotationNodes(list, measure))).toBe(list);
+  });
+
+  it("copies a moved node's position", () => {
+    const [node] = toAnnotationNodes(list, measure);
+    const next = syncAnnotations(list, [{ ...node, position: { x: 30, y: 40 } }]);
+    expect(next).not.toBe(list);
+    expect(next[0]).toMatchObject({ x: 30, y: 40, text: "a" });
+  });
+
+  it("copies a note's size only when it was resized", () => {
+    const [node] = toAnnotationNodes(list, measure);
+    const grown = { ...node, height: 300, width: 250 };
+    expect(syncAnnotations(list, [grown])).toBe(list);
+    expect(syncAnnotations(list, [grown], new Set([node.id]))[0]).toMatchObject({ width: 250, height: 300 });
   });
 });
