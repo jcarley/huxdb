@@ -5,7 +5,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { Channel } from "@tauri-apps/api/core";
-import type { CompletionCatalog, ConnectionConfig, DataPage, DataSpec, DataTarget, DiagramCandidate, DiagramContent, DiagramInfo, DiagramStructure, DiagramSummary, EditBatch, ExternalFile, ExternalSql, QualifiedName, QueryEvent, QueryResult, QueryTarget, RunScope, SavedDiagram, SavedQuery, SavedQueryInfo, SavedQuerySummary, SchemaObjects, TableDesign, TableInfo, TextRange, ViewColumnSource, ViewDesign, ViewInfo } from "./types";
+import type { CompletionCatalog, ConnectionConfig, DataPage, DataSpec, DataTarget, DiagramCandidate, DiagramContent, DiagramExport, DiagramInfo, DiagramStructure, DiagramSummary, EditBatch, ExportProgress, ExternalFile, ExternalSql, PdfPage, QualifiedName, QueryEvent, QueryResult, QueryTarget, RunScope, SavedDiagram, SavedQuery, SavedQueryInfo, SavedQuerySummary, SchemaObjects, TableDesign, TableInfo, TextRange, ViewColumnSource, ViewDesign, ViewInfo } from "./types";
 
 export const listConnections = () => invoke<ConnectionConfig[]>("list_connections");
 
@@ -209,3 +209,7 @@ export const applyEdits = (tabId: string, target: DataTarget, batch: EditBatch) 
   invoke<number>("data_apply", { tabId, target, batch });
 
 export const errorMessage = (err: unknown) => (typeof err === "string" ? err : String(err));
+
+/** Resolves to the saved path, or null if the save dialog was cancelled. */
+export const exportDiagram = (request: DiagramExport, suggestedName: string, onEvent: Channel<ExportProgress>) => invoke<string | null>("export_diagram", { request, suggestedName, onEvent });
+export const printDiagram = (pages: PdfPage[], suggestedName: string, onEvent: Channel<ExportProgress>) => invoke<void>("print_diagram", { pages, suggestedName, onEvent });

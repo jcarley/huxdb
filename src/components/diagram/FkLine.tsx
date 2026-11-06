@@ -1,9 +1,9 @@
 import { BaseEdge, getSmoothStepPath, useStore } from "@xyflow/react";
 import type { EdgeProps } from "@xyflow/react";
 import { useMemo } from "react";
-import type { LineKind } from "../../lib/diagramCardinality";
+import { DIAGRAM_FONT } from "../../lib/diagramBrowser";
 import type { FkEdge } from "../../lib/diagramFlow";
-import { namePlace, routePath, selfLoop, selfLoopNamePlace, shortName, STUB } from "../../lib/diagramLines";
+import { FK_DASHES, NAME_LIFT, namePlace, routePath, selfLoop, selfLoopNamePlace, shortName, STUB } from "../../lib/diagramLines";
 import { useDiagrams } from "../../stores/diagram";
 import { useDiagramId } from "./DiagramId";
 import { lineStyle, markerUrl } from "./FkMarkers";
@@ -12,17 +12,12 @@ import type { Tone } from "./FkMarkers";
 /** Below this zoom a name can't be read, and hundreds of them only make noise. */
 const NAMES_FROM_ZOOM = 0.5;
 
-/** Above the line, because a line drawn after this one would strike through it. */
-const NAME_LIFT = 3;
-
-const DASHES: Record<LineKind, string | undefined> = { plain: undefined, unchecked: "6 4", partition: "1.5 3" };
-
 /** SVG text, not `EdgeLabelRenderer`: it adds no DOM element per name, and it's in the picture for export. */
 function FkName({ name, x, y, fontSize }: { name: string; x: number; y: number; fontSize: number }) {
   const shown = useStore((s) => s.transform[2] >= NAMES_FROM_ZOOM);
   if (!shown) return null;
   return (
-    <text x={x} y={y - NAME_LIFT} fontSize={fontSize} style={{ fill: "var(--color-base-content)", stroke: "var(--color-base-100)", strokeWidth: 3, paintOrder: "stroke", pointerEvents: "auto" }}>
+    <text x={x} y={y - NAME_LIFT} fontSize={fontSize} style={{ fontFamily: `${DIAGRAM_FONT}, system-ui, sans-serif`, fill: "var(--color-base-content)", stroke: "var(--color-base-100)", strokeWidth: 3, paintOrder: "stroke", pointerEvents: "auto" }}>
       <title>{name}</title>
       {shortName(name)}
     </text>
@@ -51,7 +46,7 @@ export function FkLine({ id, source, target, sourceX, sourceY, targetX, targetY,
   const tone: Tone = selected ? "selected" : color ?? (data.hub ? "hub" : "plain");
   return (
     <>
-      <BaseEdge id={id} path={path} markerStart={markerUrl(tab, `child-${data.childEnd}`, tone)} markerEnd={markerUrl(tab, `parent-${data.parentEnd}`, tone)} style={{ ...lineStyle(tone), strokeDasharray: DASHES[data.kind] }} />
+      <BaseEdge id={id} path={path} markerStart={markerUrl(tab, `child-${data.childEnd}`, tone)} markerEnd={markerUrl(tab, `parent-${data.parentEnd}`, tone)} style={{ ...lineStyle(tone), strokeDasharray: FK_DASHES[data.kind] }} />
       {nameSize > 0 && <FkName name={data.name} {...(self ? selfLoopNamePlace(sourceX, sourceY, targetY) : namePlace(sourceX, sourceY))} fontSize={nameSize} />}
     </>
   );

@@ -77,7 +77,7 @@ pub fn delete_saved_query(store: State<'_, SavedQueryStore>, connection_id: Stri
 }
 
 /// What a file dialog answered; `None` if it was cancelled.
-async fn picked(receiver: oneshot::Receiver<Option<FilePath>>) -> Result<Option<PathBuf>, String> {
+pub(crate) async fn picked(receiver: oneshot::Receiver<Option<FilePath>>) -> Result<Option<PathBuf>, String> {
     let picked = receiver.await.map_err(|_| "The file dialog closed unexpectedly.".to_string())?;
     picked.map(|file| file.into_path().map_err(|e| e.to_string())).transpose()
 }

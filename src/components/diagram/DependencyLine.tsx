@@ -2,13 +2,10 @@ import { BaseEdge, getSmoothStepPath } from "@xyflow/react";
 import type { EdgeProps } from "@xyflow/react";
 import { useMemo } from "react";
 import type { DependencyEdge } from "../../lib/diagramFlow";
-import { routePath, STUB } from "../../lib/diagramLines";
+import { DEPENDENCY_DASHES, routePath, STUB } from "../../lib/diagramLines";
 import { useDiagramId } from "./DiagramId";
 import { lineStyle, markerUrl } from "./FkMarkers";
 import type { Tone } from "./FkMarkers";
-
-/** Not a foreign key's `6 4` or `1.5 3`, so the three kinds of line differ by more than colour. */
-const DASHES = "8 5";
 
 /** A view or routine reading an object. From the reader's right side to the source's left, with an arrowhead at the source. */
 export function DependencyLine({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, selected }: EdgeProps<DependencyEdge>) {
@@ -20,5 +17,5 @@ export function DependencyLine({ id, sourceX, sourceY, targetX, targetY, sourceP
   if (!data) return null;
 
   const tone: Tone = selected ? "selected" : data.hub ? "hub" : "plain";
-  return <BaseEdge id={id} path={path} markerEnd={markerUrl(tab, "reads", tone)} style={{ ...lineStyle(tone), strokeDasharray: DASHES }} />;
+  return <BaseEdge id={id} path={path} markerEnd={markerUrl(tab, "reads", tone)} style={{ ...lineStyle(tone), strokeDasharray: DEPENDENCY_DASHES }} />;
 }

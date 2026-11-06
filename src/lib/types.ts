@@ -821,3 +821,11 @@ export interface DiagramContent {
 }
 
 export interface SavedDiagram extends DiagramInfo, DiagramContent {}
+
+// Diagram export (mirrors diagram/export.rs)
+export interface PdfPage { svg: string; widthPt: number; heightPt: number; marginPt: number }
+export type DiagramExport =
+  | { format: "svg"; svg: string }
+  | { format: "png"; svg: string; scale: number }
+  | { format: "pdf"; pages: PdfPage[] };
+export interface ExportProgress { done: number; total: number }

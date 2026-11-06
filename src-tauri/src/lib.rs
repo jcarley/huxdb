@@ -111,6 +111,8 @@ pub fn run() {
             diagram::diagram_structure,
             diagram::diagram_related,
             diagram::diagram_view_sources,
+            diagram::export_diagram,
+            diagram::print_diagram,
             diagram::list_diagrams,
             diagram::diagram_summary,
             diagram::load_diagram,

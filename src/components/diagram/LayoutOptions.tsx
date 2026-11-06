@@ -10,7 +10,7 @@ const QUALITIES: { value: DiagramLayoutQuality; label: string }[] = [
 ];
 
 /** Buttons rather than a `<select>`: a native list takes focus away, and showing every choice saves a click. */
-function Choice<T extends string | number>({ label, value, choices, onChange }: { label: string; value: T; choices: { value: T; label: string }[]; onChange: (value: T) => void }) {
+export function Choice<T extends string | number>({ label, value, choices, onChange }: { label: string; value: T; choices: { value: T; label: string }[]; onChange: (value: T) => void }) {
   return (
     <div role="group" aria-label={label} className="mb-3">
       <div className="mb-1">{label}</div>

@@ -1,6 +1,35 @@
 // The geometry of a foreign key's line. Pure.
 
+import type { ChildEnd, LineKind, ParentEnd } from "./diagramCardinality";
 import type { Point } from "./diagramLayout";
+
+export type Mark = `child-${ChildEnd}` | `parent-${ParentEnd}` | "reads";
+
+export const MARK_HEIGHT = 14;
+export const RING_RADIUS = 3.5;
+
+/**
+ * Drawn along the line's direction of travel, with `orient="auto"` turning them. Child marks
+ * sit at the start of a line, so x = 0 is the table's edge. Parent marks sit at its end, so
+ * `ref` is. Either way the bar or foot is by the table and the ring faces the line.
+ * A parent's bar is the same distance from the table on both, because lines into one column
+ * share an end. `auto-start-reverse` would halve these, but its WebKit support wasn't checked.
+ */
+export const MARKS: Record<Mark, { width: number; ref: number; lines: string; ring?: number }> = {
+  "child-zero-or-many": { width: 17, ref: 0, lines: "M0 1L9 7L0 13", ring: 12.5 },
+  "child-zero-or-one": { width: 15, ref: 0, lines: "M4 1V13", ring: 10.5 },
+  "parent-one": { width: 14, ref: 14, lines: "M10 1V13M5 1V13" },
+  "parent-zero-or-one": { width: 15, ref: 15, lines: "M11 1V13", ring: 4.5 },
+  // An open arrowhead at a dependency's end, which is the source's edge.
+  reads: { width: 12, ref: 11, lines: "M2 2L11 7L2 12" },
+};
+
+/** Above the line, because a line drawn after this one would strike through it. */
+export const NAME_LIFT = 3;
+
+export const FK_DASHES: Record<LineKind, string | undefined> = { plain: undefined, unchecked: "6 4", partition: "1.5 3" };
+/** Not a foreign key's `6 4` or `1.5 3`, so the three kinds of line differ by more than colour. */
+export const DEPENDENCY_DASHES = "8 5";
 
 /** How far a line runs straight out of a table: past its mark, whichever way it turns next. */
 export const STUB = 26;

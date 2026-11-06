@@ -2,7 +2,7 @@ import "@fontsource/inter/400.css";
 import "@fontsource/inter/600.css";
 import { applyEdgeChanges, applyNodeChanges, Background, ReactFlow, ReactFlowProvider, useNodesInitialized, useReactFlow, useStoreApi, useUpdateNodeInternals } from "@xyflow/react";
 import type { EdgeChange, EdgeMouseHandler, NodeChange, NodeMouseHandler, OnSelectionChangeParams, Viewport } from "@xyflow/react";
-import { ListPlus, Network, RefreshCw, Save, SaveAll, StickyNote, Type, Undo2 } from "lucide-react";
+import { Download, ListPlus, Network, Printer, RefreshCw, Save, SaveAll, StickyNote, Type, Undo2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { fitNote, isAnnotationId, objectNodes, PASTE_OFFSET } from "../../lib/diagramAnnotations";
@@ -20,6 +20,7 @@ import { useContextMenu } from "../tree/ContextMenu";
 import { AnnotationBox } from "./AnnotationBox";
 import { DependencyLine } from "./DependencyLine";
 import { DiagramId } from "./DiagramId";
+import { ExportDialog } from "./ExportDialog";
 import { FkLine } from "./FkLine";
 import { FkMarkers } from "./FkMarkers";
 import { LayoutOptions } from "./LayoutOptions";
@@ -219,6 +220,17 @@ function LayoutButtons({ id }: { id: string }) {
   );
 }
 
+/** Needs something to draw. */
+function ExportButtons({ id, onOpen }: { id: string; onOpen: (mode: "export" | "print") => void }) {
+  const empty = useDiagrams((s) => !s.diagrams[id]?.nodes.length);
+  return (
+    <>
+      <ToolButton icon={Download} label="Export" title="Export the Diagram" iconOnly disabled={empty} onClick={() => onOpen("export")} />
+      <ToolButton icon={Printer} label="Print" title="Print the Diagram" iconOnly disabled={empty} onClick={() => onOpen("print")} />
+    </>
+  );
+}
+
 /** Adds at the canvas's centre, stepped so a second click doesn't land on the first. */
 function AnnotationButtons({ id }: { id: string }) {
   const flow = useReactFlow();
@@ -300,10 +312,12 @@ function StatusBar({ id }: { id: string }) {
 function Workspace({ id }: { id: string }) {
   const pendingReport = useDiagrams((s) => !!s.diagrams[id]?.report);
   const blackAndWhite = useDiagrams((s) => s.diagrams[id]?.options?.blackAndWhite);
+  const [exporting, setExporting] = useState<"export" | "print" | null>(null);
   useKeys(id);
 
   return (
     <DiagramId.Provider value={id}>
+      {exporting && <ExportDialog id={id} mode={exporting} onClose={() => setExporting(null)} />}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="flex items-center gap-1 border-b border-base-300 px-1 py-0.5">
           <ToolButton icon={Save} label="Save" title="Save (⌘S)" iconOnly onClick={() => void useSavedDiagrams.getState().save(id)} />
@@ -312,6 +326,7 @@ function Workspace({ id }: { id: string }) {
           <ToolButton icon={ListPlus} label="Objects" title={pendingReport ? "Review the changes in the database first" : "Choose the Objects on This Diagram"} iconOnly disabled={pendingReport} onClick={() => openTablePicker(id)} />
           <AnnotationButtons id={id} />
           <LayoutButtons id={id} />
+          <ExportButtons id={id} onOpen={setExporting} />
         </div>
         <Banner id={id} />
         <div className="flex min-h-0 flex-1">
