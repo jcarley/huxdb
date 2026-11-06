@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { compareStructure, foreignKeyKey, objectKind, reportCount, resolveOids, tableKey } from "../lib/diagramDrift";
 import type { DriftReport } from "../lib/diagramDrift";
-import { annotationLines, bottomZ, isAnnotationId, newAnnotation, newAnnotationId, PASTE_OFFSET, topZ } from "../lib/diagramAnnotations";
+import { annotationLines, bottomZ, DIAGRAM_COLORS, isAnnotationId, newAnnotation, newAnnotationId, PASTE_OFFSET, topZ } from "../lib/diagramAnnotations";
 import { captureLayout, EMPTY_COLORS, layoutSignature, pruneColors, renameColors, restoreLayout } from "../lib/diagramFile";
 import { applyArrangement, currentArrangement, dropRoutes, reshapeNodes, revealHubLines, selectionArrangement, syncAnnotations, toAnnotationNodes, toEdges, toNodes } from "../lib/diagramFlow";
 import type { AnnotationNode, Arrangement, DiagramEdge, DiagramNode } from "../lib/diagramFlow";
@@ -167,6 +167,15 @@ interface DiagramsState {
 const measure = async (structure: DiagramStructure, options: DiagramOptions) => {
   await fontsReady();
   return new Map<number, Box>(structure.tables.map((t) => [t.oid, tableBox(t, measureText, options)]));
+};
+
+/** A name from a hand-edited or newer file that isn't in the palette would be drawn as an invalid CSS value. */
+const isColor = (c: unknown): c is DiagramColor => DIAGRAM_COLORS.includes(c as DiagramColor);
+const knownColor = (a: DiagramAnnotation): DiagramAnnotation => (a.color == null || isColor(a.color) ? a : { ...a, color: null });
+const knownColors = (c: DiagramColors | undefined): DiagramColors => {
+  if (!c) return EMPTY_COLORS;
+  const only = (m: Record<string, DiagramColor>) => Object.fromEntries(Object.entries(m ?? {}).filter(([, v]) => isColor(v)));
+  return { objects: only(c.objects), lines: only(c.lines) };
 };
 
 const candidateKeys = (candidates: { schema: string; name: string }[]) => candidates.map(tableKey);
@@ -342,8 +351,8 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
         snapshot: saved.snapshot,
         known: saved.known,
         layout: saved.layout,
-        annotations: saved.layout.annotations ?? [],
-        colors: saved.layout.colors ?? EMPTY_COLORS,
+        annotations: (saved.layout.annotations ?? []).map(knownColor),
+        colors: knownColors(saved.layout.colors),
         viewport: saved.layout.viewport,
         // Older files have none. Filling in from defaults keeps them clean, and they gain options on the next save.
         options: { ...defaultOptions(saved.snapshot), ...saved.layout.options },
@@ -565,7 +574,8 @@ export const useDiagrams = create<DiagramsState>((set, get) => {
         const keys = new Set(removed.map(tableKey));
         const layout = currentLayout(d);
         for (const key of keys) delete layout.tables[key];
-        const left = d.nodes.filter((n) => !gone.has(n.id));
+        // The selection is cleared below, so no node may stay marked.
+        const left = d.nodes.filter((n) => !gone.has(n.id)).map((n) => (n.selected ? { ...n, selected: false } : n));
         const structure = keep(d.structure, (t) => !gone.has(String(t.oid)));
         const snapshot = keep(d.snapshot, (t) => !keys.has(tableKey(t as { schema: string; name: string })));
         // Against the snapshot: a table the report says is gone keeps its colour until that's accepted.

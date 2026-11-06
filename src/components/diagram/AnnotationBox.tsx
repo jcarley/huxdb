@@ -1,6 +1,6 @@
 import { NodeResizer } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
-import { memo, useMemo } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import { DIAGRAM_FONT, measureText } from "../../lib/diagramBrowser";
 import { annotationLines, lineHeight, NOTE_MIN_WIDTH, NOTE_PADDING } from "../../lib/diagramAnnotations";
 import type { AnnotationNode } from "../../lib/diagramFlow";
@@ -14,6 +14,11 @@ export const AnnotationBox = memo(function AnnotationBox({ data, selected, width
   const { annotation: a } = data;
   const editing = useDiagrams((s) => s.diagrams[tab]?.editing === a.id);
   const note = a.kind === "note";
+  const field = useRef<HTMLTextAreaElement>(null);
+  // autoFocus would scroll the canvas's overflow:hidden wrapper to an off-screen note and misalign it for good.
+  useEffect(() => {
+    if (editing) field.current?.focus({ preventScroll: true });
+  }, [editing]);
   const line = lineHeight(a.fontSize);
   // While a drag resizes the node its width runs ahead of the saved one, and the lines follow it.
   const lines = useMemo(() => (note && width && width !== a.width ? annotationLines({ ...a, width }, measureText) : data.lines), [a, data.lines, note, width]);
@@ -34,9 +39,10 @@ export const AnnotationBox = memo(function AnnotationBox({ data, selected, width
         {editing ? (
           <textarea
             className="nodrag nokey nopan nowheel absolute inset-0 resize-none overflow-hidden bg-transparent outline-none"
-            style={{ ...text, padding: NOTE_PADDING, whiteSpace: note ? "pre-wrap" : "pre" }}
+            style={{ ...text, padding: NOTE_PADDING, whiteSpace: note ? "pre-wrap" : "pre", overflowWrap: "anywhere" }}
+            ref={field}
             value={a.text}
-            autoFocus
+            onContextMenu={(e) => e.stopPropagation()}
             onChange={(e) => useDiagrams.getState().updateAnnotation(tab, a.id, { text: e.target.value })}
             onBlur={() => useDiagrams.getState().stopEditing(tab)}
             onKeyDown={(e) => {

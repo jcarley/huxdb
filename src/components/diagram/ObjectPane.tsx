@@ -43,11 +43,17 @@ export function ObjectPane({ id }: { id: string }) {
     if (single) list.current?.querySelector(`[data-node="${single}"]`)?.scrollIntoView({ block: "nearest" });
   }, [single]);
 
+  const centre = (node: string, duration: number) => {
+    const target = useDiagrams.getState().diagrams[id]?.nodes.find((n) => n.id === node);
+    if (target) void flow.setCenter(target.position.x + (target.width ?? 0) / 2, target.position.y + (target.height ?? 0) / 2, { zoom: Math.max(flow.getZoom(), READING_ZOOM), duration });
+  };
   const pick = (node: string) => {
-    const diagrams = useDiagrams.getState();
-    diagrams.selectNode(id, node);
-    const target = diagrams.diagrams[id]?.nodes.find((n) => n.id === node);
-    if (target) void flow.setCenter(target.position.x + (target.width ?? 0) / 2, target.position.y + (target.height ?? 0) / 2, { zoom: Math.max(flow.getZoom(), READING_ZOOM), duration: 200 });
+    useDiagrams.getState().selectNode(id, node);
+    centre(node, 200);
+  };
+  const edit = (node: string) => {
+    centre(node, 0);
+    useDiagrams.getState().startEditing(id, node);
   };
 
   const picked = new Set(selected);
@@ -85,8 +91,8 @@ export function ObjectPane({ id }: { id: string }) {
               className={`flex w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-left ${picked.has(row.id) ? "bg-primary/15" : "hover:bg-base-200"}`}
               aria-pressed={picked.has(row.id)}
               onClick={() => pick(row.id)}
-              onDoubleClick={() => useDiagrams.getState().startEditing(id, row.id)}
-              onContextMenu={(e) => openMenu(e, annotationMenu(id, row.id))}
+              onDoubleClick={() => edit(row.id)}
+              onContextMenu={(e) => openMenu(e, annotationMenu(id, row.id, (n) => centre(n, 0)))}
             >
               <Icon className="size-3.5 shrink-0 text-base-content/60" strokeWidth={1.75} />
               <span className="truncate">{row.label}</span>

@@ -652,6 +652,16 @@ describe("annotations", () => {
     expect(store().content("t")?.layout).toMatchObject({ annotations: [note], colors });
   });
 
+  it("ignores a colour name outside the palette, and stays clean", async () => {
+    database(s);
+    const saved = withNote();
+    const key = tableKey(table(1, "a"));
+    await openSaved({ ...saved, layout: { ...saved.layout, annotations: [{ ...note, color: "purple" as never }], colors: { objects: { [key]: "purple" as never }, lines: {} } } });
+    expect(editor().annotations[0].color).toBeNull();
+    expect(editor().colors.objects).toEqual({});
+    expect(editor().dirty).toBe(false);
+  });
+
   it("opens a file with neither as empty, and clean", async () => {
     database(s);
     await openSaved(savedDiagram(s));
@@ -707,6 +717,15 @@ describe("annotations", () => {
     useDiagrams.setState((st) => ({ diagrams: { ...st.diagrams, t: { ...st.diagrams.t, annotations: [{ ...note, text: "edited meanwhile" }] } } }));
     await running;
     expect(annotationNodes()[0].data.lines).toEqual(["edited meanwhile"]);
+  });
+
+  it("clears the selected mark on the nodes that stay when tables are removed", async () => {
+    await opened();
+    store().selectNode("t", "2");
+    expect(tableNodes().find((n) => n.id === "2")?.selected).toBe(true);
+    store().removeTables("t", ["1"]);
+    expect(editor().selection.nodes).toEqual([]);
+    expect(editor().nodes.some((n) => n.selected)).toBe(false);
   });
 
   it("doesn't remove an annotation when asked to remove its id as a table", async () => {

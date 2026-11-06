@@ -38,13 +38,18 @@ async function addRelated(tabId: string, nodes: string[]) {
 }
 
 /** Notes and labels: Edit Text is for the one the menu opened on, the rest act on every selected annotation when it opens on one of them. */
-export function annotationMenu(tabId: string, node: string): MenuItem[] {
+export function annotationMenu(tabId: string, node: string, reveal?: (node: string) => void): MenuItem[] {
   const diagram = useDiagrams.getState().diagrams[tabId];
   if (!diagram?.annotations.some((a) => a.id === node)) return [];
   const ids = diagram.selection.nodes.includes(node) ? diagram.selection.nodes.filter(isAnnotationId) : [node];
   const store = useDiagrams.getState();
   return [
-    { label: "Edit Text", icon: PencilLine, onClick: () => store.startEditing(tabId, node) },
+    { label: "Edit Text", icon: PencilLine, onClick: () => {
+        // Typing into a note off the screen would be blind.
+        reveal?.(node);
+        store.startEditing(tabId, node);
+      },
+    },
     { label: "Bring to Front", icon: ArrowUpToLine, onClick: () => store.bringToFront(tabId, ids) },
     { label: "Send to Back", icon: ArrowDownToLine, onClick: () => store.sendToBack(tabId, ids) },
     { label: "Copy", icon: Copy, onClick: () => store.copyAnnotations(tabId, ids) },
@@ -53,8 +58,8 @@ export function annotationMenu(tabId: string, node: string): MenuItem[] {
 }
 
 /** Items follow the object the menu opened on. Add Related and Remove act on the whole selection when it opens on a selected object. */
-export function nodeMenu(tabId: string, node: string): MenuItem[] {
-  if (isAnnotationId(node)) return annotationMenu(tabId, node);
+export function nodeMenu(tabId: string, node: string, reveal?: (node: string) => void): MenuItem[] {
+  if (isAnnotationId(node)) return annotationMenu(tabId, node, reveal);
   const diagram = useDiagrams.getState().diagrams[tabId];
   const table = diagram?.structure?.tables.find((t) => String(t.oid) === node);
   if (!diagram || !table) return [];

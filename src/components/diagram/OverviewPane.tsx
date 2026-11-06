@@ -27,7 +27,7 @@ export function OverviewPane() {
 
   return (
     <div ref={pane} className="shrink-0 border-t border-base-300" aria-label="Overview">
-      <MiniMap pannable zoomable style={{ position: "static", margin: 0, width: width || 1, height: MINIMAP_HEIGHT }} bgColor="#ffffff" nodeColor="#4a7ab5" maskColor="rgba(120,130,145,0.25)" maskStrokeColor="#2d7dd2" maskStrokeWidth={2} />
+      <MiniMap pannable zoomable style={{ position: "static", margin: 0, width: width || 1, height: MINIMAP_HEIGHT }} bgColor="#ffffff" nodeColor={(n) => (n.type === "table" ? "#4a7ab5" : "#c9ced6")} maskColor="rgba(120,130,145,0.25)" maskStrokeColor="#2d7dd2" maskStrokeWidth={2} />
       <div className="flex items-center gap-1 border-t border-base-300 px-1 py-1">
         <button type="button" className="btn btn-ghost btn-xs btn-square" aria-label="Zoom Out" title="Zoom Out (⌘−)" onClick={() => zoomTo(stepZoom(zoom, -1))}>
           <Minus className="size-3.5" />
