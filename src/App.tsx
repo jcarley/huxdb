@@ -9,6 +9,7 @@ import { MainArea } from "./components/MainArea";
 import { SavedQueryDialogs } from "./components/SavedQueryDialogs";
 import { Sidebar } from "./components/Sidebar";
 import { Toolbar } from "./components/Toolbar";
+import { ContextMenu } from "./components/tree/ContextMenu";
 import { useConnections } from "./stores/connections";
 import { hasUnsavedTabs, useTabs } from "./stores/tabs";
 import "./App.css";
@@ -46,6 +47,7 @@ function App() {
       <SavedQueryDialogs />
       <DiagramPicker />
       <DiagramDialogs />
+      <ContextMenu />
     </div>
   );
 }
