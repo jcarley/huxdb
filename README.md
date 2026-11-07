@@ -8,6 +8,8 @@ It is built with [Tauri 2](https://tauri.app/), with a Rust backend and a React 
 
 ## Features
 
+The screenshots below use a sample database.
+
 ### Connections and the object tree
 
 - Saved connection profiles that you can create, edit, delete and test.
@@ -15,10 +17,14 @@ It is built with [Tauri 2](https://tauri.app/), with a Rust backend and a React 
 - Object lists for tables (rows, OID, owner, comment) and views.
 - A Connections panel you can resize or collapse.
 
+![The object tree beside a list of a schema's tables](docs/screenshots/tables.png)
+
 ### Table and view designers
 
 - **Table designer:** fields, indexes, foreign keys, uniques, checks, excludes, triggers, rules, options and comments. Save creates or alters the table in one transaction, and SQL Preview shows exactly what will run.
 - **View designer:** an editable definition, advanced options and comments, with Preview, Explain and Beautify SQL. Preview and Explain run read-only and are always rolled back.
+
+![The table designer showing the fields of the orders table](docs/screenshots/table-designer.png)
 
 ### Data editor
 
@@ -29,6 +35,8 @@ It is built with [Tauri 2](https://tauri.app/), with a Rust backend and a React 
 
 Tables without a primary key open read-only.
 
+![The data editor with a filter applied and pending edits and a deletion colour-coded in the grid](docs/screenshots/data-editor.png)
+
 ### Query editor
 
 - SQL tabs, each with its own connection, so `SET`, temp tables and transactions behave as they do in `psql`.
@@ -36,6 +44,8 @@ Tables without a primary key open read-only.
 - Context-aware completion for tables, columns, aliases, CTEs, functions and keywords, with signature help inside function calls.
 - A result tab for each statement, and a Messages tab with each statement's rows, time, notices and errors.
 - Save queries to a connection, or open and save external `.sql` files.
+
+![The query editor with a monthly revenue query and its results](docs/screenshots/query-editor.png)
 
 ### Diagrams
 
@@ -45,6 +55,8 @@ Tables without a primary key open read-only.
 - Labels, notes and colours, saved with the diagram. None of them touch the database.
 - Saved diagrams reread the database when opened and report what has changed since the last save.
 - Export to SVG, PNG or PDF, or print.
+
+![A diagram of the orders tables with colours, a note and a view](docs/screenshots/diagram.png)
 
 ## Tech stack
 
